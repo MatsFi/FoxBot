@@ -1,6 +1,8 @@
 from discord.ext import commands
 import discord
 from discord import app_commands
+from typing import Optional
+
 
 from models.drip_points_manager import PointsManagerSingleton
 
@@ -16,9 +18,9 @@ class Economy(commands.Cog):
             base_url=bot.config['API_BASE_URL'],
             api_key=bot.config['API_KEY'],
             realm_id=bot.config['REALM_ID'],
-#            hackathon_api_key=bot.config['HACKATHON_API_KEY'],
-#            hackathon_realm_id=bot.config['HACKATHON_REALM_ID'],
-#            db_path = bot.config["PLAYER_DB_PATH"],
+            hackathon_api_key=bot.config['HACKATHON_API_KEY'],
+            hackathon_realm_id=bot.config['HACKATHON_REALM_ID'],
+            db_path = bot.config["PLAYER_DB_PATH"],
         )
 
     @app_commands.guild_only()
@@ -32,55 +34,100 @@ class Economy(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
-    @app_commands.guild_only()
-    @app_commands.command(name="tip", description="Tip Points to another user")
-    @app_commands.describe(
-        user="The user to tip",
-        amount="Amount of Points to tip"
+    @commands.hybrid_command(
+        name="transfer",
+        description="Transfer points to another user"
     )
-    async def tip(self, interaction: discord.Interaction, user: discord.Member, amount: int):
-        await interaction.response.defer(ephemeral=True)
+    @app_commands.describe(
+        recipient="The user to transfer points to",
+        amount="Amount of points to transfer",
+        reason="Optional reason for the transfer"
+    )
+    async def transfer(
+        self,
+        ctx: commands.Context,
+        recipient: discord.Member,
+        amount: int,
+        reason: Optional[str] = None
+    ) -> None:
+        """Transfer points to another user.
         
+        Args:
+            ctx: Command context
+            recipient: User to receive points
+            amount: Amount of points to transfer
+            reason: Optional reason for the transfer
+        """
+        # Input validation
         if amount <= 0:
-            await interaction.followup.send("Amount must be positive!", ephemeral=True)
-            return
-            
-        if user.id == interaction.user.id:
-            await interaction.followup.send("You can't tip yourself!", ephemeral=True)
+            await ctx.reply("❌ Amount must be positive!", ephemeral=True)
             return
 
-        if user.bot:
-            await interaction.followup.send("You can't tip bots!", ephemeral=True)
+        if recipient.id == ctx.author.id:
+            await ctx.reply("❌ You cannot transfer points to yourself!", ephemeral=True)
             return
-        
+
+        if recipient.bot:
+            await ctx.reply("❌ You cannot transfer points to bots!", ephemeral=True)
+            return
+
         try:
-            # Check if sender has enough balance
-            sender_balance = await self.points_manager.get_balance(interaction.user.id)
-            if sender_balance < amount:
-                await interaction.followup.send(
-                    f"You don't have enough Points! Your balance: {sender_balance:,} Points", 
+            # Check sender's balance
+            balance = await self.points_manager.get_balance(ctx.author.id)
+            if balance < amount:
+                await ctx.reply(
+                    f"❌ Insufficient balance! You have {balance:,} points.",
                     ephemeral=True
                 )
                 return
 
+            # Process transfer
+            description = f"Transfer to {recipient.display_name}"
+            if reason:
+                description += f": {reason}"
+
             success = await self.points_manager.transfer_points(
-                interaction.user.id,
-                user.id,
-                amount
+                from_user_id=ctx.author.id,
+                to_user_id=recipient.id,
+                amount=amount,
+#                description=description
             )
             
             if success:
-                await interaction.followup.send(
-                    f"Successfully tipped {amount:,} Points to {user.mention}!",
-                    ephemeral=True
+                embed = discord.Embed(
+                    title="Points Transfer",
+                    description=f"✅ Successfully transferred {amount:,} points to {recipient.mention}",
+                    color=discord.Color.green()
                 )
+                
+                if reason:
+                    embed.add_field(
+                        name="Reason",
+                        value=reason,
+                        inline=False
+                    )
+                
+                # Add new balances
+                new_sender_balance = await self.points_manager.get_balance(ctx.author.id)
+                new_recipient_balance = await self.points_manager.get_balance(recipient.id)
+                
+                embed.add_field(
+                    name="Your New Balance",
+                    value=f"{new_sender_balance:,} points",
+                    inline=True
+                )
+                embed.add_field(
+                    name=f"{recipient.display_name}'s New Balance",
+                    value=f"{new_recipient_balance:,} points",
+                    inline=True
+                )
+                
+                await ctx.reply(embed=embed, ephemeral=True)
             else:
-                await interaction.followup.send(
-                    "Failed to transfer Points. Please try again later.",
-                    ephemeral=True
-                )
+                await ctx.reply("❌ Transfer failed!", ephemeral=True)
+                
         except Exception as e:
-            await interaction.followup.send(f"Error processing tip: {str(e)}", ephemeral=True)
+            await ctx.reply(f"❌ Error during transfer: {str(e)}", ephemeral=True)
 
     @app_commands.guild_only()
     @app_commands.command(name="add_points", description="[Admin] Add Points to a user")
