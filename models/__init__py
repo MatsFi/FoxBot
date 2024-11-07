@@ -1,0 +1,6 @@
+"""Models package initialization and exports."""
+from .points_manager import PointsManager
+
+__all__ = [
+    'PointsManager'
+]
