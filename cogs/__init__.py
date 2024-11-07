@@ -3,8 +3,9 @@ from typing import List
 
 # List of core cog modules that should be loaded
 CORE_EXTENSIONS: List[str] = [
-    "cogs.points",
-    "cogs.players",
+#    "cogs.points",
+#    "cogs.players",
+    "cogs.drip_economy",
 ]
 
 # Optional extensions that can be loaded

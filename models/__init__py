@@ -1,6 +1,8 @@
 """Models package initialization and exports."""
-from .points_manager import PointsManager
+from drip_points_manager import PointsManagerSingleton
+#from points_manager import PointsManager
 
 __all__ = [
-    'PointsManager'
+ #   'PointsManager',
+    'PointsManagerSingleton',
 ]

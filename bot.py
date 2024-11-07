@@ -74,6 +74,7 @@ class DiscordBot(commands.Bot):
         Args:
             config: Dictionary containing configuration values
         """
+
         # Set up intents
         intents = discord.Intents.default()
         intents.message_content = True
@@ -91,8 +92,9 @@ class DiscordBot(commands.Bot):
         # Core cogs to load
         self.core_cogs = [
 #            "cogs.predictions", # this is also in cogs/__init__.py which seems redundant
-            "cogs.players",
-            "cogs.points",
+#            "cogs.players",
+#            "cogs.points",
+            "cogs.drip_economy",
         ]
 
     async def load_cogs(self) -> None:
@@ -103,7 +105,7 @@ class DiscordBot(commands.Bot):
                 self.logger.info(f"Loaded extension '{cog}'")
             except Exception as e:
                 self.logger.error(f"Failed to load extension {cog}: {str(e)}")
-                if cog in ["cogs.points", "cogs.players"]:
+                if cog in ["cogs.drip_economy"]:#"cogs.points", "cogs.players"]:
                     # Critical cogs must load
                     raise
 
