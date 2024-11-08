@@ -27,64 +27,90 @@ class HackathonEconomy(commands.Cog):
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
     @commands.hybrid_command(
-        name="hackathon_deposit",
-        description="Deposit your Hackathon points into your Local user account"
+        name="transfer",
+        description="Transfer points to another user"
     )
     @app_commands.describe(
+        recipient="The user to transfer points to",
         amount="Amount of points to transfer",
+        reason="Optional reason for the transfer"
     )
-    async def deposit(
+    async def transfer(
         self,
         ctx: commands.Context,
+        recipient: discord.Member,
         amount: int,
+        reason: Optional[str] = None
     ) -> None:
-        """Deposit your Hackathon points into your Local user account
+        """Transfer points to another user.
         
         Args:
             ctx: Command context
+            recipient: User to receive points
             amount: Amount of points to transfer
+            reason: Optional reason for the transfer
         """
         # Input validation
         if amount <= 0:
             await ctx.reply("❌ Amount must be positive!", ephemeral=True)
             return
 
+        if recipient.id == ctx.author.id:
+            await ctx.reply("❌ You cannot transfer points to yourself!", ephemeral=True)
+            return
+
+        if recipient.bot:
+            await ctx.reply("❌ You cannot transfer points to bots!", ephemeral=True)
+            return
+
         try:
-            # Check user's Hackathon points balance
+            # Check sender's balance
             balance = await self.points_service.get_balance(ctx.author.id)
-            print("get_balance() balance : ", balance)
             if balance < amount:
                 await ctx.reply(
-                    f"❌ Insufficient Hackathon points balance! You have {balance:,} Hackathon points.",
+                    f"❌ Insufficient balance! You have {balance:,} points.",
                     ephemeral=True
                 )
                 return
 
-            # Process deposit
-            success = await self.points_service.deposit_points(
-                discord_id=ctx.author.id,
+            # Process transfer
+            description = f"Transfer to {recipient.display_name}"
+            if reason:
+                description += f": {reason}"
+
+            success = await self.points_service.transfer_points(
+                from_user_id=ctx.author.id,
+                to_user_id=recipient.id,
                 amount=amount,
+#                description=description
             )
             
             if success:
                 embed = discord.Embed(
-                    title="Hackathon Points Deposit",
-                    description=f"✅ Successfully deposited {amount:,} points to Local Economy!",
+                    title="Points Transfer",
+                    description=f"✅ Successfully transferred {amount:,} points to {recipient.mention}",
                     color=discord.Color.green()
                 )
                 
+                if reason:
+                    embed.add_field(
+                        name="Reason",
+                        value=reason,
+                        inline=False
+                    )
+                
                 # Add new balances
-                new_hackathon_balance = await self.points_service.get_balance(ctx.author.id)
-                new_local_balance = await self.points_service.get_balance(ctx.author.id)
+                new_sender_balance = await self.points_service.get_balance(ctx.author.id)
+                new_recipient_balance = await self.points_service.get_balance(recipient.id)
                 
                 embed.add_field(
-                    name="Your New Hackathon Balance",
-                    value=f"{new_hackathon_balance:,} points",
+                    name="Your New Balance",
+                    value=f"{new_sender_balance:,} points",
                     inline=True
                 )
                 embed.add_field(
-                    name="Your New Local Balance",
-                    value=f"{new_local_balance:,} points",
+                    name=f"{recipient.display_name}'s New Balance",
+                    value=f"{new_recipient_balance:,} points",
                     inline=True
                 )
                 

@@ -249,6 +249,49 @@ class HackathonPointsManager:
             )
             raise PointsError(f"Failed to transfer points: {str(e)}")
 
+    async def deposit_points(
+        self,
+        discord_id: str,
+        amount: int,
+    ) -> bool:
+        """Deposit points into Local economy."""
+        if not self._session:
+            await self.initialize()
+
+        try:
+            async with self._session.patch(
+                f"{self.base_url}/api/v4/realms/{self.realm_id}/members/{discord_id}/tokenBalance",
+                headers=await self._get_headers(),
+                json={
+                    "recipientId": discord_id,
+                    "tokens": -amount
+                }
+            ) as response:
+                if response.status == 200:
+                    # Update local account                  
+
+                    ############ call to Local economy to do this update.
+                    # local_account = self._get_account(discord_id)
+                    # local_account.balance += amount
+                    
+                    # # Record transaction
+                    # # add transaction(method) may have a bug with recording new balance as += amount
+
+                    # local_account.add_transaction(
+                    #     amount,
+                    #     "Deposit from Hackathon points into Local economy"
+                    # )
+                    return True
+                else:
+                    error_data = await response.json()
+                    raise PointsError(f"Failed to debit Hackathon points: {error_data}")
+
+        except Exception as e:
+            logger.error(
+                f"Error depositing points from Hackathon economy into your Local account: {str(e)}"
+            )
+            raise PointsError(f"Failed to deposit Hackathon points: {str(e)}")
+
     async def get_top_balances(self, limit: int = 10) -> List[tuple[int, int]]:
         """Get top point balances.
         
