@@ -1,85 +1,12 @@
 """Points system models for managing user points and transactions."""
 import aiohttp
-from typing import Optional, Dict, List
-import datetime
-from dataclasses import dataclass
+from typing import Optional, Dict, List, Tuple
+from database.models import Player, Transaction
+from datetime import datetime
+from sqlalchemy import select
 import logging
 
 logger = logging.getLogger(__name__)
-
-@dataclass
-class Transaction:
-    """Represents a point transaction."""
-    timestamp: datetime.datetime
-    user_id: int
-    amount: int
-    description: str
-    balance_after: int
-    transaction_id: str
-
-    @property
-    def is_debit(self) -> bool:
-        """Whether this is a debit transaction."""
-        return self.amount < 0
-
-    @property
-    def is_credit(self) -> bool:
-        """Whether this is a credit transaction."""
-        return self.amount > 0
-
-class PointsAccount:
-    """Represents a user's point account with transaction history."""
-    
-    def __init__(self, user_id: int, initial_balance: int = 0):
-        self.user_id = user_id
-        self.balance = initial_balance
-        self.transactions: List[Transaction] = []
-        self.last_updated = datetime.datetime.utcnow()
-
-    def add_transaction(
-        self,
-        amount: int,
-        description: str,
-        transaction_id: Optional[str] = None
-    ) -> Transaction:
-        """Record a transaction in the account history."""
-        self.balance += amount
-        transaction = Transaction(
-            timestamp=datetime.datetime.utcnow(),
-            user_id=self.user_id,
-            amount=amount,
-            description=description,
-            balance_after=self.balance,
-            transaction_id=transaction_id or f"tx_{len(self.transactions)}"
-        )
-        self.transactions.append(transaction)
-        self.last_updated = transaction.timestamp
-        return transaction
-
-    def get_transaction_history(
-        self,
-        limit: Optional[int] = None,
-        since: Optional[datetime.datetime] = None
-    ) -> List[Transaction]:
-        """Get transaction history with optional filtering."""
-        transactions = self.transactions
-        
-        if since:
-            transactions = [t for t in transactions if t.timestamp >= since]
-            
-        if limit:
-            transactions = transactions[-limit:]
-            
-        return transactions
-
-    def get_balance_at(self, timestamp: datetime.datetime) -> int:
-        """Get the balance at a specific point in time."""
-        relevant_transactions = [
-            t for t in self.transactions if t.timestamp <= timestamp
-        ]
-        if not relevant_transactions:
-            return 0
-        return relevant_transactions[-1].balance_after
 
 class HackathonPointsManager:
     """Manages point operations and API interactions."""
@@ -90,7 +17,6 @@ class HackathonPointsManager:
         self.api_key = api_config['api_key']
         self.realm_id = api_config['realm_id']
         self._session = None
-        self._accounts: Dict[str, PointsAccount] = {}
 
     @classmethod
     def from_bot(cls, bot):
@@ -124,27 +50,42 @@ class HackathonPointsManager:
             "Content-Type": "application/json"
         }
 
-    def _get_account(self, user_id: int) -> PointsAccount:
-        """Get or create a points account for a user."""
-        if user_id not in self._accounts:
-            self._accounts[user_id] = PointsAccount(user_id)
-        return self._accounts[user_id]
-
-    async def sync_account(self, user_id: int) -> PointsAccount:
-        """Sync account with API and return up-to-date account."""
-        balance = await self.get_balance(user_id)
-        account = self._get_account(user_id)
+    async def get_or_create_player(self, discord_id: str, username: str) -> Tuple[Player, bool]:
+        """Get an existing player or create a new one.
         
-        # Only update if balance differs
-        if account.balance != balance:
-            account.add_transaction(
-                amount=balance - account.balance,
-                description="Account sync adjustment",
-                transaction_id="sync_adjustment"
+        Returns:
+            Tuple of (Player, bool) where bool indicates if player was created
+        """
+        async with self.db.session() as session:
+            # Try to find existing player
+            result = await session.execute(
+                select(Player).where(Player.discord_id == discord_id)
             )
+            player = result.scalars().first()
             
-        return account
-
+            created = False
+            if not player:
+                # Create new player
+                player = Player(
+                    discord_id=discord_id,
+                    username=username,
+                    points=0,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                session.add(player)
+                await session.commit()
+                created = True
+            elif player.username != username:
+                # Update username if changed
+                player.username = username
+                player.updated_at = datetime.utcnow()
+                await session.commit()
+                
+            # Refresh the player object to ensure we have current data
+            await session.refresh(player)
+            return player, created
+        
     async def get_balance(self, user_id: int) -> int:
         """Get the point balance for a user."""
         if not self._session:
@@ -177,7 +118,6 @@ class HackathonPointsManager:
         """Add points to a user's balance."""
         if not self._session:
             await self.initialize()
-
         try:
             async with self._session.patch(
                 f"{self.base_url}/api/v4/realms/{self.realm_id}/members/{user_id}/tokenBalance",
@@ -186,9 +126,44 @@ class HackathonPointsManager:
             ) as response:
                 if response.status == 200:
                     # Update local account
-                    account = self._get_account(user_id)
-                    account.add_transaction(amount, description)
-                    return True
+                    try:
+                        async with self.db.session() as session:
+                            result = await session.execute(
+                                select(Player).where(Player.discord_id == user_id)
+                            )
+                            player = result.scalars().first()                           
+                            if not player:
+                                player = Player(
+                                    discord_id=user_id,
+                                    username=user_id,
+                                    points=0,
+                                    created_at=datetime.utcnow(),
+                                    updated_at=datetime.utcnow()
+                                )
+                                session.add(player)
+                        
+                            # Update points
+                            player.points += amount
+                            player.updated_at = datetime.utcnow()
+                            
+                            # Record transaction
+                            transaction = Transaction(
+                                player_id=player.id,
+                                amount=amount,
+                                description=description,
+                                timestamp=datetime.utcnow()
+                            )
+                            session.add(transaction)
+                            
+                            await session.commit()
+                            # Refresh the player object
+                            await session.refresh(player)
+
+                            return True
+                        
+                    except Exception as e:
+                        print(f"Error getting local balance: {str(e)}")
+                        return 0
                 else:
                     error_data = await response.json()
                     raise PointsError(f"Failed to add points: {error_data}")
@@ -200,7 +175,7 @@ class HackathonPointsManager:
         self,
         user_id: int,
         amount: int,
-        description: str = ""
+        description: str = "remove points"
     ) -> bool:
         """Remove points from a user's balance."""
         return await self.add_points(user_id, -amount, description)
@@ -210,7 +185,7 @@ class HackathonPointsManager:
         from_user_id: int,
         to_user_id: int,
         amount: int,
-        description: str = ""
+        description: str = "transfer points"
     ) -> bool:
         """Transfer points between users."""
         if not self._session:
@@ -268,8 +243,9 @@ class HackathonPointsManager:
                 }
             ) as response:
                 if response.status == 200:
-                    # Update local account                  
-
+                    # Update local account     
+                    
+                    
                     ############ call to Local economy to do this update.
                     # local_account = self._get_account(discord_id)
                     # local_account.balance += amount
