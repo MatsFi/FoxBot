@@ -13,14 +13,7 @@ def is_admin():
 class HackathonEconomy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.points_manager = HackathonPointsManager(
-            # base_url=bot.config['API_BASE_URL'],
-            # api_key=bot.config['API_KEY'],
-            # realm_id=bot.config['REALM_ID'],
-            hackathon_api_key=bot.config['HACKATHON_API_KEY'],
-            hackathon_realm_id=bot.config['HACKATHON_REALM_ID'],
-            db_path = bot.config["PLAYER_DB_PATH"],
-        )
+        self.points_service = HackathonPointsManager.from_bot(bot)
 
     @app_commands.guild_only()
     @app_commands.command(name="balance", description="Check your Points balance")
@@ -28,7 +21,7 @@ class HackathonEconomy(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            balance = await self.points_manager.get_balance(interaction.user.id)
+            balance = await self.points_service.get_balance(interaction.user.id)
             await interaction.followup.send(f"Your balance: {balance:,} Points", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
@@ -72,7 +65,7 @@ class HackathonEconomy(commands.Cog):
 
         try:
             # Check sender's balance
-            balance = await self.points_manager.get_balance(ctx.author.id)
+            balance = await self.points_service.get_balance(ctx.author.id)
             if balance < amount:
                 await ctx.reply(
                     f"❌ Insufficient balance! You have {balance:,} points.",
@@ -85,7 +78,7 @@ class HackathonEconomy(commands.Cog):
             if reason:
                 description += f": {reason}"
 
-            success = await self.points_manager.transfer_points(
+            success = await self.points_service.transfer_points(
                 from_user_id=ctx.author.id,
                 to_user_id=recipient.id,
                 amount=amount,
@@ -107,8 +100,8 @@ class HackathonEconomy(commands.Cog):
                     )
                 
                 # Add new balances
-                new_sender_balance = await self.points_manager.get_balance(ctx.author.id)
-                new_recipient_balance = await self.points_manager.get_balance(recipient.id)
+                new_sender_balance = await self.points_service.get_balance(ctx.author.id)
+                new_recipient_balance = await self.points_service.get_balance(recipient.id)
                 
                 embed.add_field(
                     name="Your New Balance",
@@ -147,10 +140,10 @@ class HackathonEconomy(commands.Cog):
             return
         
         try:
-            success = await self.points_manager.add_points(user.id, amount)
+            success = await self.points_service.add_points(user.id, amount)
             
             if success:
-                new_balance = await self.points_manager.get_balance(user.id)
+                new_balance = await self.points_service.get_balance(user.id)
                 await interaction.followup.send(
                     f"Successfully added {amount:,} Points to {user.mention}!\n"
                     f"Their new balance: {new_balance:,} Points",
@@ -184,7 +177,7 @@ class HackathonEconomy(commands.Cog):
         
         try:
             # Check if user has enough balance
-            current_balance = await self.points_manager.get_balance(user.id)
+            current_balance = await self.points_service.get_balance(user.id)
             if current_balance < amount:
                 await interaction.followup.send(
                     f"User only has {current_balance:,} Points! Cannot remove {amount:,} Points.",
@@ -192,10 +185,10 @@ class HackathonEconomy(commands.Cog):
                 )
                 return
 
-            success = await self.points_manager.remove_points(user.id, amount)
+            success = await self.points_service.remove_points(user.id, amount)
             
             if success:
-                new_balance = await self.points_manager.get_balance(user.id)
+                new_balance = await self.points_service.get_balance(user.id)
                 await interaction.followup.send(
                     f"Successfully removed {amount:,} Points from {user.mention}!\n"
                     f"Their new balance: {new_balance:,} Points",
@@ -220,7 +213,7 @@ class HackathonEconomy(commands.Cog):
             return
         
         try:
-            balance = await self.points_manager.get_balance(user.id)
+            balance = await self.points_service.get_balance(user.id)
             await interaction.followup.send(
                 f"{user.mention}'s balance: {balance:,} Points",
                 ephemeral=True
@@ -239,7 +232,7 @@ class HackathonEconomy(commands.Cog):
             members = []
             for member in ctx.guild.members:
                 if not member.bot:  # Skip bots
-                    balance = await self.points_manager.get_balance(member.id)
+                    balance = await self.points_service.get_balance(member.id)
                     if balance > 0:
                         members.append((member, balance))
 

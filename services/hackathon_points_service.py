@@ -1,6 +1,5 @@
 """Points system models for managing user points and transactions."""
 import aiohttp
-import sqlite3
 from typing import Optional, Dict, List
 import datetime
 from dataclasses import dataclass
@@ -85,51 +84,37 @@ class PointsAccount:
 class HackathonPointsManager:
     """Manages point operations and API interactions."""
     
-    def __init__(self, base_url: str, api_key: str, realm_id: str, hackathon_api_key: str, hackathon_realm_id: str, db_path: str):
-        """Initialize the points manager.
-        
-        Args:
-            base_url: Base URL for the points API
-            api_key: API authentication key
-            realm_id: Realm identifier
-        """
-        self.conn = sqlite3.connect(db_path)
-        self.create_table()
+    def __init__(self, database, api_config: dict):
+        self.db = database
+        self.base_url = api_config['base_url'].rstrip('/')
+        self.api_key = api_config['api_key']
+        self.realm_id = api_config['realm_id']
+        self._session = None
         self._accounts: Dict[str, PointsAccount] = {}
 
-        self.base_url = base_url.rstrip('/')
-        self.api_key = api_key
-        self.realm_id = realm_id
-        self.hackathon_api_key = hackathon_api_key
-        self.hackathon_realm_id = hackathon_realm_id
-        self.session: Optional[aiohttp.ClientSession] = None
-        self._accounts: Dict[int, PointsAccount] = {}
-        self._initialized = False
-
-    def create_table(self):
-        """Create the Player table if it doesn't exist."""
-        cursor = self.conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Player (
-                username TEXT PRIMARY KEY,
-                stam INTEGER DEFAULT 0
-            )
-        ''')
-        self.conn.commit()
+    @classmethod
+    def from_bot(cls, bot):
+        """Create a LocalPointsService instance from a bot instance."""
+        return cls(
+            database=bot.database,
+            # game host's API
+            api_config={
+                'base_url': bot.config.api_base_url,
+                'api_key': bot.config.api_key,
+                'realm_id': bot.config.realm_id
+            }
+        )
 
     async def initialize(self) -> None:
         """Initialize the points manager."""
-        if not self._initialized:
-            self.session = aiohttp.ClientSession()
-            self._initialized = True
-            logger.info("Points manager initialized")
+        self._session = aiohttp.ClientSession()
+        logger.info("Points manager initialized")
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
-        if self.session:
-            await self.session.close()
-            self.session = None
-        self._initialized = False
+        if self._session:
+            await self._session.close()
+            self._session = None
         logger.info("Points manager cleaned up")
 
     async def _get_headers(self) -> Dict[str, str]:
@@ -162,11 +147,11 @@ class HackathonPointsManager:
 
     async def get_balance(self, user_id: int) -> int:
         """Get the point balance for a user."""
-        if not self.session:
+        if not self._session:
             await self.initialize()
 
         try:
-            async with self.session.get(
+            async with self._session.get(
                 f"{self.base_url}/api/v4/realms/{self.realm_id}/members/{user_id}",
                 headers=await self._get_headers()
             ) as response:
@@ -190,11 +175,11 @@ class HackathonPointsManager:
         description: str = ""
     ) -> bool:
         """Add points to a user's balance."""
-        if not self.session:
+        if not self._session:
             await self.initialize()
 
         try:
-            async with self.session.patch(
+            async with self._session.patch(
                 f"{self.base_url}/api/v4/realms/{self.realm_id}/members/{user_id}/tokenBalance",
                 headers=await self._get_headers(),
                 json={"tokens": amount}
@@ -228,11 +213,11 @@ class HackathonPointsManager:
         description: str = ""
     ) -> bool:
         """Transfer points between users."""
-        if not self.session:
+        if not self._session:
             await self.initialize()
 
         try:
-            async with self.session.patch(
+            async with self._session.patch(
                 f"{self.base_url}/api/v4/realms/{self.realm_id}/members/{from_user_id}/transfer",
                 headers=await self._get_headers(),
                 json={
@@ -273,11 +258,11 @@ class HackathonPointsManager:
         Returns:
             List of (user_id, balance) tuples
         """
-        if not self.session:
+        if not self._session:
             await self.initialize()
 
         try:
-            async with self.session.get(
+            async with self._session.get(
                 f"{self.base_url}/api/v4/realms/{self.realm_id}/leaderboard",
                 headers=await self._get_headers(),
                 params={"limit": limit}

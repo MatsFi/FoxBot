@@ -17,7 +17,7 @@ class LocalPointsService:
         """Create a LocalPointsService instance from a bot instance."""
         return cls(
             database=bot.database,
-            # we use the FFS API config for now. in the future it would be the game host's API
+            # game host's API
             api_config={
                 'base_url': bot.config.api_base_url,
                 'api_key': bot.config.api_key,
