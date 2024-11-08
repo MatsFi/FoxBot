@@ -1,4 +1,4 @@
 """Discord command cogs."""
-from .economy import Economy
+from .local_economy import LocalEconomy
 
-__all__ = ['Economy']
+__all__ = ['LocalEconomy']

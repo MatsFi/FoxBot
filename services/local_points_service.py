@@ -4,7 +4,7 @@ from database.models import Player, Transaction
 from sqlalchemy import select
 from datetime import datetime
 
-class PointsService:
+class LocalPointsService:
     def __init__(self, database, api_config: dict):
         self.db = database
         self.base_url = api_config['base_url'].rstrip('/')
@@ -14,9 +14,10 @@ class PointsService:
 
     @classmethod
     def from_bot(cls, bot):
-        """Create a PointsService instance from a bot instance."""
+        """Create a LocalPointsService instance from a bot instance."""
         return cls(
             database=bot.database,
+            # we use the FFS API config for now. in the future it would be the game host's API
             api_config={
                 'base_url': bot.config.api_base_url,
                 'api_key': bot.config.api_key,
@@ -25,9 +26,11 @@ class PointsService:
         )
 
     async def initialize(self):
-        """Initialize HTTP session."""
-        if not self._session:
-            self._session = aiohttp.ClientSession()
+        # """Initialize HTTP session."""
+        # if not self._session:
+        #     self._session = aiohttp.ClientSession()
+        """Initialize database."""
+        # maybe we don't need to do anything here
 
     async def cleanup(self):
         """Cleanup resources."""

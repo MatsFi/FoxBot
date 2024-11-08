@@ -1,15 +1,15 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from services.points_service import PointsService
+from services.local_points_service import LocalPointsService
 from utils.decorators import is_admin
 
-class Economy(commands.Cog):
+class LocalEconomy(commands.Cog):
     """Economy management commands."""
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.points_service = PointsService.from_bot(bot)
+        self.points_service = LocalPointsService.from_bot(bot)
         
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -20,7 +20,7 @@ class Economy(commands.Cog):
         if self.points_service:
             await self.points_service.cleanup()
 
-    @app_commands.command(name="token_mint", description="[Admin] Mint new tokens for yourself")
+    @app_commands.command(name="local_token_mint", description="[Admin] Mint new tokens for yourself")
     @app_commands.describe(amount="Amount of tokens to mint")
     @is_admin()
     async def token_mint(self, interaction: discord.Interaction, amount: int):
@@ -86,7 +86,7 @@ class Economy(commands.Cog):
                 ephemeral=True
             )
                         
-    @app_commands.command(name="balance")
+    @app_commands.command(name="local_balance")
     async def check_balance(self, interaction: discord.Interaction):
         """Check your points balance."""
         await interaction.response.defer(ephemeral=True)
@@ -103,7 +103,7 @@ class Economy(commands.Cog):
                 ephemeral=True
             )
 
-    @app_commands.command(name="transfer")
+    @app_commands.command(name="local_transfer")
     @app_commands.describe(
         recipient="The user to transfer points to",
         amount="Amount of points to transfer",
@@ -185,7 +185,7 @@ class Economy(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"Error during transfer: {str(e)}", ephemeral=True)
 
-    @app_commands.command(name="leaderboard")
+    @app_commands.command(name="local_leaderboard")
     async def leaderboard(self, interaction: discord.Interaction):
         """Show the points leaderboard."""
         await interaction.response.defer()
@@ -232,7 +232,7 @@ class Economy(commands.Cog):
                 ephemeral=True
             )
             
-    @app_commands.command(name="debug_balance", description="[Admin] Debug balance information")
+    @app_commands.command(name="local_debug_balance", description="[Admin] Debug balance information")
     @is_admin()
     async def debug_balance(self, interaction: discord.Interaction):
         """Debug command to show detailed balance information."""
@@ -281,4 +281,4 @@ class Economy(commands.Cog):
 # This is the setup function that Discord.py looks for
 async def setup(bot: commands.Bot):
     """Setup function for the Economy cog."""
-    await bot.add_cog(Economy(bot))
+    await bot.add_cog(LocalEconomy(bot))

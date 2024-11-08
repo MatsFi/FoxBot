@@ -1,4 +1,4 @@
 """Business logic services."""
-from .points_service import PointsService
+from .local_points_service import LocalPointsService
 
-__all__ = ['PointsService']
+__all__ = ['LocalPointsService']

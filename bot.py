@@ -80,7 +80,7 @@ class DiscordBot(commands.Bot):
             
             # Load cogs
             self.logger.info("Loading cogs...")
-            await self.load_extension('cogs.economy')
+            await self.load_extension('cogs.local_economy')
             await self.tree.sync()
             
             self.logger.info(f"Bot initialized successfully")
