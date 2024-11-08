@@ -1,23 +1,22 @@
-from discord.ext import commands
 import discord
+from discord.ext import commands
 from discord import app_commands
 from typing import Optional
-
-
-from models.drip_points_manager import PointsManagerSingleton
+from services.hackathon_points_service import HackathonPointsManager
+from utils.decorators import is_admin
 
 def is_admin():
     def predicate(interaction: discord.Interaction) -> bool:
         return interaction.user.guild_permissions.administrator
     return app_commands.check(predicate)
 
-class Economy(commands.Cog):
+class HackathonEconomy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.points_manager = PointsManagerSingleton(
-            base_url=bot.config['API_BASE_URL'],
-            api_key=bot.config['API_KEY'],
-            realm_id=bot.config['REALM_ID'],
+        self.points_manager = HackathonPointsManager(
+            # base_url=bot.config['API_BASE_URL'],
+            # api_key=bot.config['API_KEY'],
+            # realm_id=bot.config['REALM_ID'],
             hackathon_api_key=bot.config['HACKATHON_API_KEY'],
             hackathon_realm_id=bot.config['HACKATHON_REALM_ID'],
             db_path = bot.config["PLAYER_DB_PATH"],
@@ -299,4 +298,4 @@ class Economy(commands.Cog):
             )
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(Economy(bot))
+    await bot.add_cog(HackathonEconomy(bot))

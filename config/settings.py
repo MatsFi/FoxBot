@@ -20,7 +20,7 @@ class BotConfig:
         load_dotenv(override=True)
         
         required_vars = {
-            'token': 'TOKEN',
+            'token': 'FOX_BOT_TOKEN',
             'api_base_url': 'API_BASE_URL',
             'api_key': 'API_KEY',
             'realm_id': 'REALM_ID',

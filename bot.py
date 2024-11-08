@@ -77,10 +77,16 @@ class DiscordBot(commands.Bot):
             self.logger.info(f"Connecting to database at {self.config.database_url}")
             self.database = Database(self.config.database_url)
             await self.database.create_all()
+
+            # Connect to Discord APIs
+            # 1. Local Economy (Fox's Pro Plan)
+            # 2. Hackathon Economy
+            # 3. FFS Economy (unsure how to do this, as we double up on connection inits here)
             
             # Load cogs
             self.logger.info("Loading cogs...")
             await self.load_extension('cogs.local_economy')
+#            await self.load_extension('cogs.hackathon_economy')
             await self.tree.sync()
             
             self.logger.info(f"Bot initialized successfully")
