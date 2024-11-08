@@ -5,11 +5,87 @@ from services.points_service import PointsService
 from utils.decorators import is_admin
 
 class Economy(commands.Cog):
+    """Economy management commands."""
+    
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Get the points service from the bot instance
-        self.points_service = bot.points_service
+        self.points_service = PointsService.from_bot(bot)
+        
+    async def cog_load(self):
+        """Called when the cog is loaded."""
+        await self.points_service.initialize()
+        
+    async def cog_unload(self):
+        """Called when the cog is unloaded."""
+        if self.points_service:
+            await self.points_service.cleanup()
 
+    @app_commands.command(name="token_mint", description="[Admin] Mint new tokens for yourself")
+    @app_commands.describe(amount="Amount of tokens to mint")
+    @is_admin()
+    async def token_mint(self, interaction: discord.Interaction, amount: int):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            if amount <= 0:
+                await interaction.followup.send("❌ Amount must be positive!", ephemeral=True)
+                return
+                
+            current_balance = await self.points_service.get_balance(
+                str(interaction.user.id),
+                username=interaction.user.name
+            )
+            
+            success = await self.points_service.add_points(
+                str(interaction.user.id),
+                amount,
+                f"Minted {amount} tokens",
+                username=interaction.user.name
+            )
+            
+            if success:
+                new_balance = await self.points_service.get_balance(
+                    str(interaction.user.id),
+                    username=interaction.user.name
+                )
+                
+                embed = discord.Embed(
+                    title="🌟 Token Minting Success",
+                    description=f"Successfully minted {amount:,} tokens!",
+                    color=discord.Color.green()
+                )
+                
+                embed.add_field(
+                    name="Previous Balance",
+                    value=f"{current_balance:,} tokens",
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="New Balance",
+                    value=f"{new_balance:,} tokens",
+                    inline=True
+                )
+                
+                embed.timestamp = discord.utils.utcnow()
+                embed.set_footer(
+                    text=f"Minted by {interaction.user.display_name}",
+                    icon_url=interaction.user.display_avatar.url
+                )
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(
+                    "❌ Failed to mint tokens. Please try again later.",
+                    ephemeral=True
+                )
+                
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error minting tokens: {str(e)}",
+                ephemeral=True
+            )
+                        
     @app_commands.command(name="balance")
     async def check_balance(self, interaction: discord.Interaction):
         """Check your points balance."""
@@ -155,7 +231,53 @@ class Economy(commands.Cog):
                 f"Error fetching leaderboard: {str(e)}",
                 ephemeral=True
             )
-
+            
+    @app_commands.command(name="debug_balance", description="[Admin] Debug balance information")
+    @is_admin()
+    async def debug_balance(self, interaction: discord.Interaction):
+        """Debug command to show detailed balance information."""
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Get balance
+            balance = await self.points_service.get_balance(
+                str(interaction.user.id),
+                username=interaction.user.name
+            )
+            
+            # Get recent transactions
+            transactions = await self.points_service.get_transactions(str(interaction.user.id))
+            
+            embed = discord.Embed(
+                title="🔍 Balance Debug Information",
+                color=discord.Color.blue()
+            )
+            
+            embed.add_field(
+                name="Current Balance",
+                value=f"{balance:,} tokens",
+                inline=False
+            )
+            
+            if transactions:
+                trans_text = "\n".join(
+                    f"• {t.timestamp.strftime('%Y-%m-%d %H:%M:%S')}: {t.amount:+d} ({t.description})"
+                    for t in transactions
+                )
+                embed.add_field(
+                    name="Recent Transactions",
+                    value=trans_text or "No transactions",
+                    inline=False
+                )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error getting debug info: {str(e)}",
+                ephemeral=True
+            )
+            
 # This is the setup function that Discord.py looks for
 async def setup(bot: commands.Bot):
     """Setup function for the Economy cog."""

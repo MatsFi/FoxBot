@@ -1,15 +1,21 @@
+"""Main bot file that handles core functionality and cog loading."""
 import asyncio
-from pathlib import Path
 import logging
+import platform
+import os
+from pathlib import Path
 from typing import Optional
+
 import discord
 from discord.ext import commands
 from config.settings import BotConfig
 from database.database import Database
-from services.points_service import PointsService
 
 class DiscordBot(commands.Bot):
+    """Main bot class with core functionality."""
+
     def __init__(self):
+        """Initialize the bot with basic configuration."""
         # Load configuration first
         self.config = BotConfig.from_env()
         
@@ -26,7 +32,6 @@ class DiscordBot(commands.Bot):
         
         # Initialize as None - will be set up in setup_hook
         self.database: Optional[Database] = None
-        self.points_service: Optional[PointsService] = None
         
         # Set up logging
         self.logger = logging.getLogger('discord_bot')
@@ -65,23 +70,13 @@ class DiscordBot(commands.Bot):
         """Initialize bot systems."""
         try:
             self.logger.info("Initializing bot systems...")
+            self.logger.info(f"Python version: {platform.python_version()}")
+            self.logger.info(f"Discord.py version: {discord.__version__}")
             
             # Initialize database
             self.logger.info(f"Connecting to database at {self.config.database_url}")
             self.database = Database(self.config.database_url)
             await self.database.create_all()
-            
-            # Initialize services
-            self.logger.info("Initializing points service...")
-            self.points_service = PointsService(
-                database=self.database,
-                api_config={
-                    'base_url': self.config.api_base_url,
-                    'api_key': self.config.api_key,
-                    'realm_id': self.config.realm_id
-                }
-            )
-            await self.points_service.initialize()
             
             # Load cogs
             self.logger.info("Loading cogs...")
@@ -89,20 +84,39 @@ class DiscordBot(commands.Bot):
             await self.tree.sync()
             
             self.logger.info(f"Bot initialized successfully")
-            self.logger.info(f"Logged in as {self.user.name}")
-            self.logger.info(f"discord.py API version: {discord.__version__}")
-     
+            
         except Exception as e:
             self.logger.error(f"Error during setup: {str(e)}")
             raise
 
+    async def on_ready(self):
+        """Handle the bot's ready event."""
+        self.logger.info(f"Logged in as {self.user.name} (ID: {self.user.id})")
+        self.logger.info(f"Running on: {platform.system()} {platform.release()} ({os.name})")
+        
+        # Set custom status
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name="for /commands"
+            )
+        )
+
     async def close(self):
-        """Cleanup before shutdown."""
+        """Clean up before the bot closes."""
         try:
-            if self.points_service:
-                await self.points_service.cleanup()
             self.logger.info("Bot is shutting down...")
+            
+            # Cleanup cogs
+            for extension in list(self.extensions.keys()):
+                try:
+                    await self.unload_extension(extension)
+                    self.logger.info(f"Unloaded extension {extension}")
+                except Exception as e:
+                    self.logger.error(f"Error unloading extension {extension}: {e}")
+            
             await super().close()
+            
         except Exception as e:
             self.logger.error(f"Error during shutdown: {str(e)}")
             raise
