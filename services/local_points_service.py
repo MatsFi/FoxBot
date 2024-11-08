@@ -91,6 +91,66 @@ class LocalPointsService:
             print(f"Error getting balance: {str(e)}")
             return 0
 
+    async def transfer_points(self, from_discord_id: str, to_discord_id: str, amount: int, description: str) -> bool:
+        """Transfer local points between users."""
+        try:
+            async with self.db.session() as session:
+                # Get or create sender
+                result = await session.execute(
+                    select(Player).where(Player.discord_id == from_discord_id)
+                )
+                sender = result.scalars().first()
+                if not sender:
+                    return False
+                
+                # Get or create recipient
+                result = await session.execute(
+                    select(Player).where(Player.discord_id == to_discord_id)
+                )
+                recipient = result.scalars().first()
+                if not recipient:
+                    recipient = Player(
+                        discord_id=to_discord_id,
+                        username=to_discord_id,
+                        points=0,
+                        created_at=datetime.utcnow(),
+                        updated_at=datetime.utcnow()
+                    )
+                    session.add(recipient)
+
+                # Ensure sender has enough points
+                if sender.points < amount:
+                    return False
+                
+                # Update sender and recipient balances
+                sender.points -= amount
+                recipient.points += amount
+                
+                # Record transactions
+                sender_transaction = Transaction(
+                    player_id=sender.id,
+                    amount=-amount,
+                    description=description,
+                    timestamp=datetime.utcnow()
+                )
+                recipient_transaction = Transaction(
+                    player_id=recipient.id,
+                    amount=amount,
+                    description=description,
+                    timestamp=datetime.utcnow()
+                )
+                
+                session.add(sender_transaction)
+                session.add(recipient_transaction)
+                
+                await session.commit()
+
+                return True
+                
+        except Exception as e:
+            print(f"Error transferring points: {str(e)}")
+            return False
+
     async def add_points(self, discord_id: str, amount: int, description: str, username: str) -> bool:
         """Add points to user's balance."""
         try:
@@ -127,7 +187,7 @@ class LocalPointsService:
                 await session.commit()
                 # Refresh the player object
                 await session.refresh(player)
-                print(f"Updated balance for {username}: {player.points}")  # Debug print
+
                 return True
                 
         except Exception as e:

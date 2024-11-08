@@ -147,8 +147,8 @@ class LocalEconomy(commands.Cog):
                 description += f": {reason}"
 
             success = await self.points_service.transfer_points(
-                from_user_id=str(interaction.user.id),
-                to_user_id=str(recipient.id),
+                from_discord_id=str(interaction.user.id),
+                to_discord_id=str(recipient.id),
                 amount=amount,
                 description=description
             )
