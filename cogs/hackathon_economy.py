@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from typing import Optional
 from services.hackathon_points_service import HackathonPointsManager
+from services.transfer_service import CrossEconomyTransferService
 from utils.decorators import is_admin
 
 def is_admin():
@@ -14,6 +15,7 @@ class HackathonEconomy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.points_service = HackathonPointsManager.from_bot(bot)
+        self.transfer_service = CrossEconomyTransferService.from_bot(bot)
 
     @app_commands.guild_only()
     @app_commands.command(name="hackathon_balance", description="Check your Points balance")
@@ -28,73 +30,149 @@ class HackathonEconomy(commands.Cog):
 
     @commands.hybrid_command(
         name="hackathon_deposit",
-        description="Deposit your Hackathon points into your Local user account"
+        description="Deposit Hackathon points into your Local account"
     )
     @app_commands.describe(
-        amount="Amount of points to transfer",
+        amount="Amount of points to transfer"
     )
-    async def deposit(
-        self,
-        ctx: commands.Context,
-        amount: int,
-    ) -> None:
-        """Deposit your Hackathon points into your Local user account
+    async def deposit(self, ctx: commands.Context, amount: int) -> None:
+        """Deposit Hackathon points into your Local account."""
+        await ctx.defer(ephemeral=True)  # Add defer for potentially slow operations
         
-        Args:
-            ctx: Command context
-            amount: Amount of points to transfer
-        """
-        # Input validation
         if amount <= 0:
             await ctx.reply("❌ Amount must be positive!", ephemeral=True)
             return
 
         try:
-            # Check user's Hackathon points balance
-            balance = await self.points_service.get_balance(ctx.author.id)
-            print("get_balance() balance : ", balance)
-            if balance < amount:
-                await ctx.reply(
-                    f"❌ Insufficient Hackathon points balance! You have {balance:,} Hackathon points.",
-                    ephemeral=True
-                )
-                return
+            # Get initial balances for verification
+            initial_hackathon = await self.points_service.get_balance(ctx.author.id)
+            initial_local = await self.bot.get_cog('LocalEconomy').points_service.get_balance(
+                str(ctx.author.id),
+                ctx.author.name
+            )
+            print(initial_hackathon, initial_local)
 
-            # Process deposit
-            success = await self.points_service.deposit_points(
-                discord_id=ctx.author.id,
-                amount=amount,
+            success, message = await self.transfer_service.deposit_to_local(
+                str(ctx.author.id),
+                amount,
+                ctx.author.name
             )
             
             if success:
+                # Get final balances
+                new_hackathon_balance = await self.points_service.get_balance(ctx.author.id)
+                new_local_balance = await self.bot.get_cog('LocalEconomy').points_service.get_balance(
+                    str(ctx.author.id),
+                    ctx.author.name
+                )
+                print(new_hackathon_balance, new_local_balance)
+
+                # Verify the changes
+                if (new_hackathon_balance != initial_hackathon - amount or 
+                    new_local_balance != initial_local + amount):
+                    await ctx.reply(
+                        "⚠️ Warning: Balance verification failed. Please check your balances!!",
+                        ephemeral=True
+                    )
+                    return
+
                 embed = discord.Embed(
-                    title="Hackathon Points Deposit",
-                    description=f"✅ Successfully deposited {amount:,} points to Local Economy!",
+                    title="Cross-Economy Transfer",
+                    description=f"✅ Successfully deposited {amount:,} points into Local economy!",
                     color=discord.Color.green()
                 )
                 
-                # Add new balances
-                new_hackathon_balance = await self.points_service.get_balance(ctx.author.id)
-                new_local_balance = await self.points_service.get_balance(ctx.author.id)
+                embed.add_field(
+                    name="Previous Balances",
+                    value=f"Hackathon: {initial_hackathon:,}\nLocal: {initial_local:,}",
+                    inline=False
+                )
                 
                 embed.add_field(
-                    name="Your New Hackathon Balance",
-                    value=f"{new_hackathon_balance:,} points",
-                    inline=True
-                )
-                embed.add_field(
-                    name="Your New Local Balance",
-                    value=f"{new_local_balance:,} points",
-                    inline=True
+                    name="New Balances",
+                    value=f"Hackathon: {new_hackathon_balance:,}\nLocal: {new_local_balance:,}",
+                    inline=False
                 )
                 
                 await ctx.reply(embed=embed, ephemeral=True)
             else:
-                await ctx.reply("❌ Transfer failed!", ephemeral=True)
+                await ctx.reply(f"❌ {message}", ephemeral=True)
                 
         except Exception as e:
-            await ctx.reply(f"❌ Error during transfer: {str(e)}", ephemeral=True)
+            await ctx.reply(f"❌ Error during deposit: {str(e)}", ephemeral=True)
 
+
+    @commands.hybrid_command(
+        name="hackathon_withdraw",
+        description="Withdraw points from your Local account to Hackathon"
+    )
+    @app_commands.describe(
+        amount="Amount of points to withdraw"
+    )
+    async def withdraw(self, ctx: commands.Context, amount: int) -> None:
+        """Withdraw points from Local account to Hackathon economy."""
+        await ctx.defer(ephemeral=True)  # Add defer for potentially slow operations
+        
+        if amount <= 0:
+            await ctx.reply("❌ Amount must be positive!", ephemeral=True)
+            return
+
+        try:
+            # Get initial balances for verification
+            initial_local = await self.bot.get_cog('LocalEconomy').points_service.get_balance(
+                str(ctx.author.id),
+                ctx.author.name
+            )
+            initial_hackathon = await self.points_service.get_balance(ctx.author.id)
+
+            success, message = await self.transfer_service.withdraw_to_hackathon(
+                str(ctx.author.id),
+                amount,
+                ctx.author.name
+            )
+            
+            if success:
+                # Get final balances
+                new_local_balance = await self.bot.get_cog('LocalEconomy').points_service.get_balance(
+                    str(ctx.author.id),
+                    ctx.author.name
+                )
+                new_hackathon_balance = await self.points_service.get_balance(ctx.author.id)
+
+                # Verify the changes
+                if (new_local_balance != initial_local - amount or 
+                    new_hackathon_balance != initial_hackathon + amount):
+                    await ctx.reply(
+                        "⚠️ Warning: Balance verification failed. Please check your balances!",
+                        ephemeral=True
+                    )
+                    return
+
+                embed = discord.Embed(
+                    title="Cross-Economy Transfer",
+                    description=f"✅ Successfully withdrew {amount:,} points to Hackathon economy!",
+                    color=discord.Color.green()
+                )
+                
+                embed.add_field(
+                    name="Previous Balances",
+                    value=f"Local: {initial_local:,}\nHackathon: {initial_hackathon:,}",
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="New Balances",
+                    value=f"Local: {new_local_balance:,}\nHackathon: {new_hackathon_balance:,}",
+                    inline=False
+                )
+                
+                await ctx.reply(embed=embed, ephemeral=True)
+            else:
+                await ctx.reply(f"❌ {message}", ephemeral=True)
+                
+        except Exception as e:
+            await ctx.reply(f"❌ Error during withdrawal: {str(e)}", ephemeral=True)
+            
     @app_commands.guild_only()
     @app_commands.command(name="hackathon_add_points", description="[Admin] Add Points to a user")
     @app_commands.describe(

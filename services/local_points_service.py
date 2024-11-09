@@ -170,8 +170,10 @@ class LocalPointsService:
                         updated_at=datetime.utcnow()
                     )
                     session.add(player)
+                    # We need to flush here to get the player ID for the transaction
+                    await session.flush()
                 
-                # Update points
+                # Update points - THIS WAS THE ISSUE
                 player.points += amount
                 player.updated_at = datetime.utcnow()
                 
@@ -184,10 +186,15 @@ class LocalPointsService:
                 )
                 session.add(transaction)
                 
+                # Explicitly commit the changes
                 await session.commit()
-                # Refresh the player object
+                
+                # Verify the changes were persisted
                 await session.refresh(player)
-
+                if player.points < 0:  # Safety check for negative balance
+                    await session.rollback()
+                    return False
+                
                 return True
                 
         except Exception as e:
