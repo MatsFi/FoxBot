@@ -22,8 +22,8 @@ class HackathonPointsManager:
             # game host's API config
             api_config={
                 'base_url': bot.config.api_base_url,
-                'api_key': bot.config.api_key,
-                'realm_id': bot.config.realm_id
+                'api_key': bot.config.hackathon_api_key,
+                'realm_id': bot.config.hackathon_realm_id
             }
         )
 

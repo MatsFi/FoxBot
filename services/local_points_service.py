@@ -5,25 +5,14 @@ from sqlalchemy import select
 from datetime import datetime
 
 class LocalPointsService:
-    def __init__(self, database, api_config: dict):
+    def __init__(self, database):
         self.db = database
-        self.base_url = api_config['base_url'].rstrip('/')
-        self.api_key = api_config['api_key']
-        self.realm_id = api_config['realm_id']
         self._session = None
 
     @classmethod
     def from_bot(cls, bot):
         """Create a LocalPointsService instance from a bot instance."""
-        return cls(
-            database=bot.database,
-            # game host's API
-            api_config={
-                'base_url': bot.config.api_base_url,
-                'api_key': bot.config.api_key,
-                'realm_id': bot.config.realm_id
-            }
-        )
+        return cls(database=bot.database)
 
     async def initialize(self):
         # """Initialize HTTP session."""
