@@ -120,7 +120,6 @@ class CrossEconomyTransferService:
             success = await self.hackathon_service.add_points(
                 discord_id,
                 amount,
-                "Transfer from Local economy"
             )
             
             if not success:
