@@ -26,7 +26,6 @@ class CrossEconomyTransferService:
         """Transfer points from Hackathon to Local economy."""
         try:
             # Log the start of transaction
-            print(f"Starting deposit to local: {discord_id}, amount: {amount}")
             self.logger.info(f"Starting deposit to local: {discord_id}, amount: {amount}")
             
             # Verify Hackathon balance
@@ -50,20 +49,15 @@ class CrossEconomyTransferService:
             )
             
             if not local_success:
-                print("Failed to credit Local economy")
                 self.logger.error("Failed to credit Local economy")
                 return False, "Failed to credit Local economy"
 
             # Verify Local credit worked
             new_local = await self.local_service.get_balance(discord_id, username)
-            print(f"New local balance after deposit: {new_local}")
             self.logger.info(f"New local balance after deposit: {new_local}")
-            print(f"Current local balance: {current_local}")
-            print(f"Amount: {amount}")
             
             if new_local != current_local + amount:
                 self.logger.error(f"Local balance mismatch: {new_local} != {current_local + amount}")
-                print("Local balance mismatch {new_local} != {current_local} + {amount}")
                 # Attempt to rollback local change
                 await self.local_service.add_points(
                     discord_id,
@@ -74,7 +68,6 @@ class CrossEconomyTransferService:
                 return False, "Local economy credit verification failed"
 
             test_local = await self.local_service.get_balance(discord_id, username)
-            print(f"Test local balance after rollback: {test_local}")
 
             # Now deduct from Hackathon economy
             hackathon_success = await self.hackathon_service.remove_points(
@@ -82,10 +75,8 @@ class CrossEconomyTransferService:
                 amount,
             )
             remove_local = await self.local_service.get_balance(discord_id, username)
-            print(f"Test local balance after remove_points: {remove_local}")
             
             if not hackathon_success:
-                print("Failed to debit Hackathon economy")
                 self.logger.error("Failed to debit Hackathon economy")
                 # Rollback Local credit
                 await self.local_service.add_points(
@@ -99,8 +90,6 @@ class CrossEconomyTransferService:
             # Final verification
             final_hackathon = await self.hackathon_service.get_balance(discord_id)
             final_local = await self.local_service.get_balance(discord_id, username)
-            print(f"Final Hackathon balance: {final_hackathon}")
-            print(f"Final Local balance: {final_local}")
             
             self.logger.info(
                 f"Transfer complete - Hackathon: {final_hackathon}, Local: {final_local}"

@@ -50,7 +50,6 @@ class HackathonEconomy(commands.Cog):
                 str(ctx.author.id),
                 ctx.author.name
             )
-            print(initial_hackathon, initial_local)
 
             success, message = await self.transfer_service.deposit_to_local(
                 str(ctx.author.id),
@@ -65,7 +64,6 @@ class HackathonEconomy(commands.Cog):
                     str(ctx.author.id),
                     ctx.author.name
                 )
-                print(new_hackathon_balance, new_local_balance)
 
                 # Verify the changes
                 if (new_hackathon_balance != initial_hackathon - amount or 
