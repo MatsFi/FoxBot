@@ -1,7 +1,7 @@
-# Multi-Economy Discord Bot
+# FFS (Multi-Economy Discord Bot)
 
 A Discord bot that provides a modular framework for connecting multiple Drip economies within a meta-gaming environment.
-This enables existing Drip economies to expand their project audiance by connecting diverse points economies within a 
+This enables existing Drip economies to expand their project audience by connecting diverse points economies within a 
 single gaming platform. 
 
 The reference target audiance is Thesis (t*) users broadly and Mezo and Acre specifically, as both already integrate Drip 
@@ -11,7 +11,7 @@ expand the userbase and circulate tokens between economies.
 ## Usage for Players (games)
 
 ### Token Mixer Lottery
-The initial game is a token mixer/lotery where players from any connected Drip points economy may add their points into
+The initial game is a token mixer/lottery where players from any connected Drip points economy may add their points into
 the Mixer for a change to win a share of the pot of tokens when the drawing is held. It is expected ecosystem managers
 will _donate_ points into the mixer so it becomes a faucet for points distribution. 
 0. `/mixer_init [ duration ]` in minutes (admin only)
@@ -20,7 +20,8 @@ will _donate_ points into the mixer so it becomes a faucet for points distributi
 3. `/mixer_results [ drawingID ]` see the results of recent drawings, or details of a specific ID
 
 ### Local Economy (Example: Thesis)
-A local database stores transaction records to ensure points move 1:1 between disperate connected Drip points economies. 
+A local database stores transaction records to ensure points move 1:1 between disparate connected Drip points economies
+using the proper `..._deposit` or `..._withdraw` commands (see Economies below). 
 `/local_balance` displays balance of local points
 `/local_leaderboard` who is king of t* points
 
@@ -31,6 +32,8 @@ A local database stores transaction records to ensure points move 1:1 between di
 ### FFS Economy (example: Acre BEES points)
 `/ffs_deposit [ amount ]` debits BEES balance and credits LOCAL balance
 `/ffs_withdraw [ amount ]` debits LOCAL balance and credits BEES balance 
+
+# Developer Details
 
 ## Project Structure
 
