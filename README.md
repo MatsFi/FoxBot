@@ -1,6 +1,6 @@
 # Multi-Economy Discord Bot
 
-A Discord bot that manages multiple point economies with secure transfer capabilities between them.
+A Discord bot that manages multiple point economies with robust transfer capabilities between them.
 
 ## Project Structure
 
@@ -45,8 +45,11 @@ discord_bot/
 
 1. **Separation of Concerns**
    - Each economy is managed by its own cog and service
-   - Transfer logic is centralized in the transfer service
-   - Database operations are isolated in the database layer
+     - Local economy is operated by this bot
+     - FFS economy is an external Drip environment
+     - Hackathon economy is the external Drip Hackathon environment
+   - Transfer logic is centralized in the transfer service proving deposit/withdraw for external<>local
+   - Database operations are isolated in the database layer and persist Local economy Player activities
 
 2. **Interface-Based Design**
    - External economies implement a common interface
@@ -119,7 +122,7 @@ discord_bot/
 ## Setup Order
 
 1. Local Economy must be loaded first to initialize the transfer service
-2. External economies can be loaded in any order after
+2. External economies can be loaded in any order thereafter
 3. Each external economy registers with the transfer service on load
 
 ## Usage

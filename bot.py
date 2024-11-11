@@ -83,8 +83,9 @@ class DiscordBot(commands.Bot):
             await self.load_extension('cogs.local_economy')  # This sets up transfer_service
             await self.load_extension('cogs.hackathon_economy')
             await self.load_extension('cogs.ffs_economy')
+            await self.load_extension('cogs.mixer_economy') 
             await self.tree.sync()
-            
+
             self.logger.info(f"Bot initialized successfully")
             
         except Exception as e:
@@ -104,7 +105,7 @@ class DiscordBot(commands.Bot):
             )
         )
 
-    async def close(self):
+async def close(self):
         """Clean up before the bot closes."""
         try:
             self.logger.info("Bot is shutting down...")
@@ -117,11 +118,20 @@ class DiscordBot(commands.Bot):
                 except Exception as e:
                     self.logger.error(f"Error unloading extension {extension}: {e}")
             
-            if self.database:
-                await self.database.close()
-                self.logger.info("Database connection closed")
+            # Close database connections if they exist
+            if hasattr(self, 'database') and self.database:
+                try:
+                    await self.database.close()
+                    self.logger.info("Database connections closed")
+                except Exception as e:
+                    self.logger.error(f"Error closing database: {e}")
             
-            await super().close()
+            # Call parent's close method
+            try:
+                await super().close()
+                self.logger.info("Discord connection closed")
+            except Exception as e:
+                self.logger.error(f"Error closing Discord connection: {e}")
             
         except Exception as e:
             self.logger.error(f"Error during shutdown: {str(e)}")

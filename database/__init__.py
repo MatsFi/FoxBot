@@ -1,5 +1,14 @@
-"""Database models and connection management."""
-from .database import Database
+"""Initialize database package."""
+from .database import Base, Database
 from .models import Player, Transaction
+from .mixer_models import MixerDraw, MixerTicket, MixerPotEntry
 
-__all__ = ['Database', 'Player', 'Transaction']
+__all__ = [
+    'Base',
+    'Database',
+    'MixerDraw',
+    'MixerTicket',
+    'MixerPotEntry',
+    'Player',
+    'Transaction',
+]
