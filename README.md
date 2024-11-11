@@ -1,6 +1,36 @@
 # Multi-Economy Discord Bot
 
-A Discord bot that manages multiple point economies with robust transfer capabilities between them.
+A Discord bot that provides a modular framework for connecting multiple Drip economies within a meta-gaming environment.
+This enables existing Drip economies to expand their project audiance by connecting diverse points economies within a 
+single gaming platform. 
+
+The reference target audiance is Thesis (t*) users broadly and Mezo and Acre specifically, as both already integrate Drip 
+within their respective Discord servers. Forward looking, additional Drip-enabled ecosystems may be easily integrated to 
+expand the userbase and circulate tokens between economies.
+
+## Usage for Players (games)
+
+### Token Mixer Lottery
+The initial game is a token mixer/lotery where players from any connected Drip points economy may add their points into
+the Mixer for a change to win a share of the pot of tokens when the drawing is held. It is expected ecosystem managers
+will _donate_ points into the mixer so it becomes a faucet for points distribution. 
+0. `/mixer_init [ duration ]` in minutes (admin only)
+1. `/mixer_add [ amount ] [ token ] [ is_donation ]` players add tokens from any connected points economy and receive a ticket
+2. `/mixer_status` display details about the current drawing
+3. `/mixer_results [ drawingID ]` see the results of recent drawings, or details of a specific ID
+
+### Local Economy (Example: Thesis)
+A local database stores transaction records to ensure points move 1:1 between disperate connected Drip points economies. 
+`/local_balance` displays balance of local points
+`/local_leaderboard` who is king of t* points
+
+### Hackathon Economy (example: Mezo MATS points)
+`/hackathon_deposit [ amount ]` debits MATS balance and credits LOCAL balance
+`/hackathon_withdraw [ amount ]` debits LOCAL balance and credits MATS balance 
+
+### FFS Economy (example: Acre BEES points)
+`/ffs_deposit [ amount ]` debits BEES balance and credits LOCAL balance
+`/ffs_withdraw [ amount ]` debits LOCAL balance and credits BEES balance 
 
 ## Project Structure
 
@@ -9,9 +39,10 @@ discord_bot/
 ├── cogs/
 │   ├── __init__.py                 # Cog package initialization
 │   ├── economy_cog_template.py     # Base class for economy cogs
+│   ├── local_economy.py            # Local Economy commands
 │   ├── ffs_economy.py              # FFS Economy commands
 │   ├── hackathon_economy.py        # Hackathon Economy commands
-│   └── local_economy.py            # Local Economy commands
+│   └── mixer_economy.py            # Mixer/Lottery commands
 │
 ├── config/
 │   ├── __init__.py
@@ -28,6 +59,7 @@ discord_bot/
 │   ├── ffs_points_service.py           # FFS economy service
 │   ├── hackathon_points_service.py     # Hackathon economy service
 │   ├── local_points_service.py         # Local economy service
+│   ├── mixer_service.py                # Mixer economy service
 │   ├── transfer_interface.py           # Interface definitions
 │   └── transfer_service.py             # Cross-economy transfer logic
 │
@@ -124,8 +156,9 @@ discord_bot/
 1. Local Economy must be loaded first to initialize the transfer service
 2. External economies can be loaded in any order thereafter
 3. Each external economy registers with the transfer service on load
+4. Load additional games which interact with an economy thereafter
 
-## Usage
+## Deployment
 
 ```bash
 # Set up environment variables
@@ -149,4 +182,4 @@ python bot.py
 
 ## License
 
-[Your License Here]
+MIT

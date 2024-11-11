@@ -1,214 +1,219 @@
-from typing import Tuple
-from database.models import Player, Transaction
-from sqlalchemy import select
+"""Service for managing Local economy points."""
+import logging
 from datetime import datetime
+from sqlalchemy import select, func
+from typing import List, Optional, Tuple
+from database.models import Player, Transaction
+
+logger = logging.getLogger(__name__)
 
 class LocalPointsService:
+    """Service for managing Local economy points."""
+    
     def __init__(self, database):
         self.db = database
-        self._session = None
-
+        self.logger = logging.getLogger(__name__)
+    
     @classmethod
     def from_bot(cls, bot):
-        """Create a LocalPointsService instance from a bot instance."""
-        return cls(database=bot.database)
+        """Create service instance from bot instance."""
+        return cls(bot.database)
 
-    async def initialize(self):
-        # """Initialize HTTP session."""
-        # if not self._session:
-        #     self._session = aiohttp.ClientSession()
-        """Initialize database."""
-        # maybe we don't need to do anything here
+    async def initialize(self) -> None:
+        """Initialize the service."""
+        self.logger.info("LocalPointsService initialized")
 
-    async def cleanup(self):
-        """Cleanup resources."""
-        if self._session:
-            await self._session.close()
-            self._session = None
-
-    async def get_or_create_player(self, discord_id: str, username: str) -> Tuple[Player, bool]:
-        """Get an existing player or create a new one.
-        
-        Returns:
-            Tuple of (Player, bool) where bool indicates if player was created
-        """
-        async with self.db.session() as session:
-            # Try to find existing player
-            result = await session.execute(
-                select(Player).where(Player.discord_id == discord_id)
-            )
-            player = result.scalars().first()
-            
-            created = False
-            if not player:
-                # Create new player
-                player = Player(
-                    discord_id=discord_id,
-                    username=username,
-                    points=0,
-                    created_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow()
-                )
-                session.add(player)
-                await session.commit()
-                created = True
-            elif player.username != username:
-                # Update username if changed
-                player.username = username
-                player.updated_at = datetime.utcnow()
-                await session.commit()
-                
-            # Refresh the player object to ensure we have current data
-            await session.refresh(player)
-            return player, created
+    async def cleanup(self) -> None:
+        """Cleanup any resources."""
+        self.logger.info("LocalPointsService cleaned up")
 
     async def get_balance(self, discord_id: str, username: str = None) -> int:
-        """Get user's point balance."""
-        try:
-            async with self.db.session() as session:
-                result = await session.execute(
-                    select(Player).where(Player.discord_id == discord_id)
-                )
-                player = result.scalars().first()
-                
-                if not player and username:
-                    player, _ = await self.get_or_create_player(discord_id, username)
-                
-                return player.points if player else 0
-        except Exception as e:
-            print(f"Error getting balance: {str(e)}")
-            return 0
-
-    async def transfer_points(self, from_discord_id: str, to_discord_id: str, amount: int, description: str) -> bool:
-        """Transfer local points between users."""
-        try:
-            async with self.db.session() as session:
-                # Get or create sender
-                result = await session.execute(
-                    select(Player).where(Player.discord_id == from_discord_id)
-                )
-                sender = result.scalars().first()
-                if not sender:
-                    return False
-                
-                # Get or create recipient
-                result = await session.execute(
-                    select(Player).where(Player.discord_id == to_discord_id)
-                )
-                recipient = result.scalars().first()
-                if not recipient:
-                    recipient = Player(
-                        discord_id=to_discord_id,
-                        username=to_discord_id,
-                        points=0,
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow()
-                    )
-                    session.add(recipient)
-
-                # Ensure sender has enough points
-                if sender.points < amount:
-                    return False
-                
-                # Update sender and recipient balances
-                sender.points -= amount
-                recipient.points += amount
-                
-                # Record transactions
-                sender_transaction = Transaction(
-                    player_id=sender.id,
-                    amount=-amount,
-                    description=description,
-                    timestamp=datetime.utcnow()
-                )
-                recipient_transaction = Transaction(
-                    player_id=recipient.id,
-                    amount=amount,
-                    description=description,
-                    timestamp=datetime.utcnow()
-                )
-                
-                session.add(sender_transaction)
-                session.add(recipient_transaction)
-                
+        """Get the point balance for a user.
+        
+        Args:
+            discord_id (str): The Discord ID of the user
+            username (str, optional): The username to update if changed
+            
+        Returns:
+            int: The current balance
+        """
+        async with self.db.session() as session:
+            # Get or create player
+            query = select(Player).where(Player.discord_id == discord_id)
+            result = await session.execute(query)
+            player = result.scalar_one_or_none()
+            
+            if not player:
+                # Create new player if they don't exist
+                player = Player(discord_id=discord_id, username=username or "Unknown", balance=0)
+                session.add(player)
                 await session.commit()
+                return 0
+            
+            # Update username if provided and different
+            if username and player.username != username:
+                player.username = username
+                await session.commit()
+            
+            return player.balance
 
-                return True
-                
-        except Exception as e:
-            print(f"Error transferring points: {str(e)}")
-            return False
-
-    async def add_points(self, discord_id: str, amount: int, description: str, username: str) -> bool:
-        """Add points to user's balance."""
-        try:
-            async with self.db.session() as session:
+    async def add_points(
+        self,
+        discord_id: str,
+        amount: int,
+        description: str,
+        username: str = None
+    ) -> bool:
+        """Add points to a user's balance.
+        
+        Args:
+            discord_id (str): The Discord ID of the user
+            amount (int): The amount to add (can be negative)
+            description (str): Description of the transaction
+            username (str, optional): The username to update if changed
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        async with self.db.session() as session:
+            try:
                 # Get or create player
-                result = await session.execute(
-                    select(Player).where(Player.discord_id == discord_id)
-                )
-                player = result.scalars().first()
+                query = select(Player).where(Player.discord_id == discord_id)
+                result = await session.execute(query)
+                player = result.scalar_one_or_none()
                 
                 if not player:
                     player = Player(
                         discord_id=discord_id,
-                        username=username,
-                        points=0,
-                        created_at=datetime.utcnow(),
-                        updated_at=datetime.utcnow()
+                        username=username or "Unknown",
+                        balance=0
                     )
                     session.add(player)
-                    # We need to flush here to get the player ID for the transaction
-                    await session.flush()
+                elif username and player.username != username:
+                    player.username = username
                 
-                # Update points - THIS WAS THE ISSUE
-                player.points += amount
-                player.updated_at = datetime.utcnow()
+                # Check if balance would go negative
+                if player.balance + amount < 0:
+                    return False
+                
+                # Update balance
+                player.balance += amount
                 
                 # Record transaction
                 transaction = Transaction(
-                    player_id=player.id,
+                    player_id=discord_id,
                     amount=amount,
                     description=description,
                     timestamp=datetime.utcnow()
                 )
                 session.add(transaction)
                 
-                # Explicitly commit the changes
                 await session.commit()
-                
-                # Verify the changes were persisted
-                await session.refresh(player)
-                if player.points < 0:  # Safety check for negative balance
-                    await session.rollback()
-                    return False
-                
                 return True
                 
-        except Exception as e:
-            print(f"Error adding points: {str(e)}")
-            return False
+            except Exception as e:
+                self.logger.error(f"Error adding points: {e}")
+                await session.rollback()
+                return False
 
-    async def get_transactions(self, discord_id: str, limit: int = 10) -> list[Transaction]:
-        """Get recent transactions for a user."""
-        try:
-            async with self.db.session() as session:
-                player = await session.execute(
-                    select(Player).where(Player.discord_id == discord_id)
+    async def transfer_points(
+        self,
+        from_discord_id: str,
+        to_discord_id: str,
+        amount: int,
+        description: str,
+        from_username: str = None,
+        to_username: str = None
+    ) -> bool:
+        """Transfer points between users.
+        
+        Args:
+            from_discord_id (str): Discord ID of sender
+            to_discord_id (str): Discord ID of recipient
+            amount (int): Amount to transfer
+            description (str): Description of the transfer
+            from_username (str, optional): Username of sender
+            to_username (str, optional): Username of recipient
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        async with self.db.session() as session:
+            try:
+                # Get or create players
+                from_player = await session.scalar(
+                    select(Player).where(Player.discord_id == from_discord_id)
                 )
-                player = player.scalars().first()
-                
-                if not player:
-                    return []
-                
-                transactions = await session.execute(
-                    select(Transaction)
-                    .where(Transaction.player_id == player.id)
-                    .order_by(Transaction.timestamp.desc())
-                    .limit(limit)
+                to_player = await session.scalar(
+                    select(Player).where(Player.discord_id == to_discord_id)
                 )
                 
-                return transactions.scalars().all()
-        except Exception as e:
-            print(f"Error getting transactions: {str(e)}")
-            return []
+                # Create players if they don't exist
+                if not from_player:
+                    from_player = Player(
+                        discord_id=from_discord_id,
+                        username=from_username or "Unknown",
+                        balance=0
+                    )
+                    session.add(from_player)
+                elif from_username and from_player.username != from_username:
+                    from_player.username = from_username
+                
+                if not to_player:
+                    to_player = Player(
+                        discord_id=to_discord_id,
+                        username=to_username or "Unknown",
+                        balance=0
+                    )
+                    session.add(to_player)
+                elif to_username and to_player.username != to_username:
+                    to_player.username = to_username
+                
+                # Check if sender has enough balance
+                if from_player.balance < amount:
+                    return False
+                
+                # Update balances
+                from_player.balance -= amount
+                to_player.balance += amount
+                
+                # Record transactions
+                send_transaction = Transaction(
+                    player_id=from_discord_id,
+                    amount=-amount,
+                    description=f"Sent: {description}"
+                )
+                receive_transaction = Transaction(
+                    player_id=to_discord_id,
+                    amount=amount,
+                    description=f"Received: {description}"
+                )
+                session.add_all([send_transaction, receive_transaction])
+                
+                await session.commit()
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"Error transferring points: {e}")
+                await session.rollback()
+                return False
+
+    async def get_transactions(self, discord_id: str, limit: int = 10) -> List[Transaction]:
+        """Get recent transactions for a user.
+        
+        Args:
+            discord_id (str): The Discord ID of the user
+            limit (int, optional): Maximum number of transactions to return
+            
+        Returns:
+            List[Transaction]: List of recent transactions
+        """
+        async with self.db.session() as session:
+            query = select(Transaction).where(
+                Transaction.player_id == discord_id
+            ).order_by(
+                Transaction.timestamp.desc()
+            ).limit(limit)
+            
+            result = await session.execute(query)
+            return result.scalars().all()
