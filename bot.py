@@ -78,10 +78,11 @@ class DiscordBot(commands.Bot):
             self.database = Database(self.config.database_url)
             await self.database.create_all()
             
-            # Load cogs
+            # Load cogs in specific order: local_economy must be first
             self.logger.info("Loading cogs...")
-            await self.load_extension('cogs.local_economy')
+            await self.load_extension('cogs.local_economy')  # This sets up transfer_service
             await self.load_extension('cogs.hackathon_economy')
+            await self.load_extension('cogs.ffs_economy')
             await self.tree.sync()
             
             self.logger.info(f"Bot initialized successfully")
@@ -115,6 +116,10 @@ class DiscordBot(commands.Bot):
                     self.logger.info(f"Unloaded extension {extension}")
                 except Exception as e:
                     self.logger.error(f"Error unloading extension {extension}: {e}")
+            
+            if self.database:
+                await self.database.close()
+                self.logger.info("Database connection closed")
             
             await super().close()
             

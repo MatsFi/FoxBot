@@ -1,7 +1,8 @@
+"""Local economy cog implementation."""
 import discord
 from discord.ext import commands
 from discord import app_commands
-from services.local_points_service import LocalPointsService
+from services import LocalPointsService, CrossEconomyTransferService
 from utils.decorators import is_admin
 
 class LocalEconomy(commands.Cog):
@@ -10,6 +11,9 @@ class LocalEconomy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.points_service = LocalPointsService.from_bot(bot)
+        
+        # Initialize transfer service and attach to bot for other cogs to access
+        self.bot.transfer_service = CrossEconomyTransferService(self.points_service)
         
     async def cog_load(self):
         """Called when the cog is loaded."""
@@ -92,7 +96,10 @@ class LocalEconomy(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            balance = await self.points_service.get_balance(str(interaction.user.id))
+            balance = await self.points_service.get_balance(
+                str(interaction.user.id),
+                username=interaction.user.name
+            )
             await interaction.followup.send(
                 f"Your balance: {balance:,} Points",
                 ephemeral=True
@@ -133,7 +140,10 @@ class LocalEconomy(commands.Cog):
 
         try:
             # Get sender's balance
-            sender_balance = await self.points_service.get_balance(str(interaction.user.id))
+            sender_balance = await self.points_service.get_balance(
+                str(interaction.user.id),
+                username=interaction.user.name
+            )
             if sender_balance < amount:
                 await interaction.followup.send(
                     f"Insufficient balance! You have {sender_balance:,} points.",
@@ -150,13 +160,21 @@ class LocalEconomy(commands.Cog):
                 from_discord_id=str(interaction.user.id),
                 to_discord_id=str(recipient.id),
                 amount=amount,
-                description=description
+                description=description,
+                from_username=interaction.user.name,
+                to_username=recipient.name
             )
 
             if success:
                 # Get updated balances
-                new_sender_balance = await self.points_service.get_balance(str(interaction.user.id))
-                new_recipient_balance = await self.points_service.get_balance(str(recipient.id))
+                new_sender_balance = await self.points_service.get_balance(
+                    str(interaction.user.id),
+                    username=interaction.user.name
+                )
+                new_recipient_balance = await self.points_service.get_balance(
+                    str(recipient.id),
+                    username=recipient.name
+                )
 
                 embed = discord.Embed(
                     title="Points Transfer",
@@ -195,7 +213,10 @@ class LocalEconomy(commands.Cog):
             members = []
             for member in interaction.guild.members:
                 if not member.bot:  # Skip bots
-                    balance = await self.points_service.get_balance(str(member.id))
+                    balance = await self.points_service.get_balance(
+                        str(member.id),
+                        username=member.name
+                    )
                     if balance > 0:
                         members.append((member, balance))
 
@@ -231,7 +252,7 @@ class LocalEconomy(commands.Cog):
                 f"Error fetching leaderboard: {str(e)}",
                 ephemeral=True
             )
-            
+
     @app_commands.command(name="local_debug_balance", description="[Admin] Debug balance information")
     @is_admin()
     async def debug_balance(self, interaction: discord.Interaction):
@@ -246,7 +267,9 @@ class LocalEconomy(commands.Cog):
             )
             
             # Get recent transactions
-            transactions = await self.points_service.get_transactions(str(interaction.user.id))
+            transactions = await self.points_service.get_transactions(
+                str(interaction.user.id)
+            )
             
             embed = discord.Embed(
                 title="🔍 Balance Debug Information",
@@ -262,7 +285,7 @@ class LocalEconomy(commands.Cog):
             if transactions:
                 trans_text = "\n".join(
                     f"• {t.timestamp.strftime('%Y-%m-%d %H:%M:%S')}: {t.amount:+d} ({t.description})"
-                    for t in transactions
+                    for t in transactions[-10:]  # Show last 10 transactions
                 )
                 embed.add_field(
                     name="Recent Transactions",
@@ -277,8 +300,16 @@ class LocalEconomy(commands.Cog):
                 f"❌ Error getting debug info: {str(e)}",
                 ephemeral=True
             )
-            
-# This is the setup function that Discord.py looks for
-async def setup(bot: commands.Bot):
+
+    @token_mint.error
+    @debug_balance.error
+    async def admin_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CheckFailure):
+            await interaction.response.send_message(
+                "You don't have permission to use this command!",
+                ephemeral=True
+            )
+
+async def setup(bot):
     """Setup function for the Economy cog."""
     await bot.add_cog(LocalEconomy(bot))

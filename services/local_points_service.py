@@ -1,5 +1,4 @@
-import aiohttp
-from typing import Optional, Tuple
+from typing import Tuple
 from database.models import Player, Transaction
 from sqlalchemy import select
 from datetime import datetime

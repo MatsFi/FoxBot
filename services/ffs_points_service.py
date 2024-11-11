@@ -1,12 +1,12 @@
-"""Points system for managing Hackathon economy points via API."""
+"""Points system for managing FFS economy points via API."""
 import aiohttp
 from typing import Dict
 import logging
 
 logger = logging.getLogger(__name__)
 
-class HackathonPointsManager:
-    """Manages point operations and API interactions for Hackathon economy."""
+class FFSPointsManager:
+    """Manages point operations and API interactions for FFS economy."""
     
     def __init__(self, api_config: dict):
         self.base_url = api_config['base_url'].rstrip('/')
@@ -17,27 +17,27 @@ class HackathonPointsManager:
 
     @classmethod
     def from_bot(cls, bot):
-        """Create a HackathonPointsManager instance from a bot instance."""
+        """Create a FFSPointsManager instance from a bot instance."""
         return cls(
             # game host's API config
             api_config={
                 'base_url': bot.config.api_base_url,
-                'api_key': bot.config.hackathon_api_key,
-                'realm_id': bot.config.hackathon_realm_id
+                'api_key': bot.config.ffs_api_key,
+                'realm_id': bot.config.ffs_realm_id
             }
         )
 
     async def initialize(self) -> None:
         """Initialize the points manager."""
         self._session = aiohttp.ClientSession()
-        self.logger.info("Hackathon points manager initialized")
+        self.logger.info("FFS points manager initialized")
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
         if self._session:
             await self._session.close()
             self._session = None
-        self.logger.info("Hackathon points manager cleaned up")
+        self.logger.info("FFS points manager cleaned up")
 
     async def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests."""
@@ -47,7 +47,7 @@ class HackathonPointsManager:
         }
 
     async def get_balance(self, user_id: int) -> int:
-        """Get the point balance for a user from the Hackathon API."""
+        """Get the point balance for a user from the FFS API."""
         if not self._session:
             await self.initialize()
 
@@ -70,7 +70,7 @@ class HackathonPointsManager:
             raise PointsError(f"Failed to get balance: {str(e)}")
 
     async def add_points(self, user_id: int, amount: int) -> bool:
-        """Add points to user's balance using the Hackathon API."""
+        """Add points to user's balance using the FFS API."""
         if not self._session:
             await self.initialize()
 
@@ -92,11 +92,11 @@ class HackathonPointsManager:
             return False
 
     async def remove_points(self, user_id: int, amount: int) -> bool:
-        """Remove points from user's balance using the Hackathon API."""
+        """Remove points from user's balance using the FFS API."""
         return await self.add_points(user_id, -amount)
 
     async def transfer_points(self, from_user_id: int, to_user_id: int, amount: int) -> bool:
-        """Transfer points between users using the Hackathon API."""
+        """Transfer points between users using the FFS API."""
         if not self._session:
             await self.initialize()
 
@@ -125,7 +125,7 @@ class HackathonPointsManager:
             return False
 
     async def get_top_balances(self, limit: int = 10) -> list[tuple[int, int]]:
-        """Get top point balances from the Hackathon API."""
+        """Get top point balances from the FFS API."""
         if not self._session:
             await self.initialize()
 

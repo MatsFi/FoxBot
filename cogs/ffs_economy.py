@@ -1,46 +1,46 @@
-"""Hackathon economy cog implementation."""
+"""FFS economy cog implementation."""
 import discord
 from discord.ext import commands
 from discord import app_commands
-from services import HackathonPointsManager, HackathonServiceAdapter
+from services import FFSPointsManager, FFSServiceAdapter
 from utils.decorators import is_admin
 from .economy_cog_template import ExternalEconomyCog
 
-class HackathonEconomy(ExternalEconomyCog):
-    """Handles Hackathon economy operations."""
+class FFSEconomy(ExternalEconomyCog):
+    """Handles FFS economy operations."""
     
     def __init__(self, bot):
         super().__init__(
             bot,
-            HackathonPointsManager,
-            HackathonServiceAdapter,
-            "Hackathon"
+            FFSPointsManager,
+            FFSServiceAdapter,
+            "FFS"
         )
 
     @commands.hybrid_command(
-        name="hackathon_deposit",
-        description="Deposit Hackathon points into your Local account"
+        name="ffs_deposit",
+        description="Deposit FFS points into your Local account"
     )
     @app_commands.describe(
         amount="Amount of points to transfer"
     )
     async def deposit(self, ctx: commands.Context, amount: int) -> None:
-        """Deposit Hackathon points into your Local account."""
+        """Deposit FFS points into your Local account."""
         await self.process_deposit(ctx, amount)
 
     @commands.hybrid_command(
-        name="hackathon_withdraw",
-        description="Withdraw points from your Local account to Hackathon"
+        name="ffs_withdraw",
+        description="Withdraw points from your Local account to FFS"
     )
     @app_commands.describe(
         amount="Amount of points to withdraw"
     )
     async def withdraw(self, ctx: commands.Context, amount: int) -> None:
-        """Withdraw points from Local account to Hackathon economy."""
+        """Withdraw points from Local account to FFS economy."""
         await self.process_withdraw(ctx, amount)
 
     @app_commands.guild_only()
-    @app_commands.command(name="hackathon_balance", description="Check your Points balance")
+    @app_commands.command(name="ffs_balance", description="Check your Points balance")
     async def check_balance(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
@@ -51,7 +51,7 @@ class HackathonEconomy(ExternalEconomyCog):
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
     @app_commands.guild_only()
-    @app_commands.command(name="hackathon_add_points", description="[Admin] Add Points to a user")
+    @app_commands.command(name="ffs_add_points", description="[Admin] Add Points to a user")
     @app_commands.describe(
         user="The user to receive Points",
         amount="Amount of Points to add"
@@ -87,7 +87,7 @@ class HackathonEconomy(ExternalEconomyCog):
             await interaction.followup.send(f"Error adding Points: {str(e)}", ephemeral=True)
 
     @app_commands.guild_only()
-    @app_commands.command(name="hackathon_remove_points", description="[Admin] Remove Points from a user")
+    @app_commands.command(name="ffs_remove_points", description="[Admin] Remove Points from a user")
     @app_commands.describe(
         user="The user to remove Points from",
         amount="Amount of Points to remove"
@@ -131,7 +131,7 @@ class HackathonEconomy(ExternalEconomyCog):
             await interaction.followup.send(f"Error removing Points: {str(e)}", ephemeral=True)
 
     @app_commands.guild_only()
-    @app_commands.command(name="hackathon_check", description="Check another user's Points balance")
+    @app_commands.command(name="ffs_check", description="Check another user's Points balance")
     @app_commands.describe(user="The user to check")
     async def check_other(self, interaction: discord.Interaction, user: discord.Member):
         await interaction.response.defer(ephemeral=True)
@@ -150,7 +150,7 @@ class HackathonEconomy(ExternalEconomyCog):
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
     @commands.hybrid_command(
-        name="hackathon_leaderboard",
+        name="ffs_leaderboard",
         description="Show the points leaderboard"
     )
     async def leaderboard(self, ctx: commands.Context) -> None:
@@ -215,4 +215,4 @@ class HackathonEconomy(ExternalEconomyCog):
             )
 
 async def setup(bot):
-    await bot.add_cog(HackathonEconomy(bot))
+    await bot.add_cog(FFSEconomy(bot))
