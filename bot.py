@@ -5,9 +5,9 @@ import platform
 import os
 from pathlib import Path
 from typing import Optional
-
+from aiohttp import web
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from config.settings import BotConfig
 from database.database import Database
 
@@ -66,6 +66,13 @@ class DiscordBot(commands.Bot):
         self.logger.addHandler(file_handler)
         self.logger.addHandler(console_handler)
 
+        # Health check attributes
+        self.last_heartbeat = None
+        self.web_app = web.Application()
+        self.web_app.router.add_get("/health", self.health_check)
+        self.web_app.router.add_get("/ping", self.ping)
+        self.start_timestamp = None
+
     async def setup_hook(self):
         """Initialize bot systems."""
         try:
@@ -83,14 +90,74 @@ class DiscordBot(commands.Bot):
             await self.load_extension('cogs.local_economy')  # This sets up transfer_service
             await self.load_extension('cogs.hackathon_economy')
             await self.load_extension('cogs.ffs_economy')
-            await self.load_extension('cogs.mixer_economy') 
+            await self.load_extension('cogs.mixer_economy')
             await self.tree.sync()
-
+            
+            # Start health check tasks
+            self.heartbeat.start()
+            self.start_web_server.start()
+            self.start_timestamp = discord.utils.utcnow()
+            
             self.logger.info(f"Bot initialized successfully")
             
         except Exception as e:
             self.logger.error(f"Error during setup: {str(e)}")
             raise
+
+    @tasks.loop()
+    async def heartbeat(self):
+        """Update heartbeat timestamp."""
+        self.last_heartbeat = discord.utils.utcnow()
+        await asyncio.sleep(30)  # Update every 30 seconds
+
+    @tasks.loop(count=1)
+    async def start_web_server(self):
+        """Start the web server for health checks."""
+        runner = web.AppRunner(self.web_app)
+        await runner.setup()
+        site = web.TCPSite(runner, host='0.0.0.0', port=self.config.web_port)
+        await site.start()
+        self.logger.info(f"Health check server started on port {self.config.web_port}")
+
+    async def health_check(self, request: web.Request) -> web.Response:
+        """Handle health check requests."""
+        try:
+            # Basic health checks
+            is_ready = self.is_ready()
+            latency = self.latency
+            uptime = (discord.utils.utcnow() - self.start_timestamp).total_seconds() if self.start_timestamp else 0
+            connected_guilds = len(self.guilds)
+            
+            # Database check
+            db_healthy = False
+            try:
+                async with self.database.session() as session:
+                    await session.execute("SELECT 1")
+                db_healthy = True
+            except Exception as e:
+                self.logger.error(f"Database health check failed: {e}")
+
+            health_data = {
+                "status": "healthy" if is_ready and db_healthy else "unhealthy",
+                "uptime_seconds": uptime,
+                "latency_ms": round(latency * 1000, 2),
+                "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
+                "connected_guilds": connected_guilds,
+                "database_healthy": db_healthy,
+                "version": "1.0.0",  # Update as needed
+            }
+
+            return web.json_response(health_data)
+        except Exception as e:
+            self.logger.error(f"Health check error: {e}")
+            return web.json_response(
+                {"status": "error", "message": str(e)},
+                status=500
+            )
+
+    async def ping(self, request: web.Request) -> web.Response:
+        """Simple ping endpoint."""
+        return web.Response(text="pong")
 
     async def on_ready(self):
         """Handle the bot's ready event."""
@@ -105,10 +172,14 @@ class DiscordBot(commands.Bot):
             )
         )
 
-async def close(self):
+    async def close(self):
         """Clean up before the bot closes."""
         try:
             self.logger.info("Bot is shutting down...")
+            
+            # Stop tasks
+            self.heartbeat.cancel()
+            self.start_web_server.cancel()
             
             # Cleanup cogs
             for extension in list(self.extensions.keys()):
@@ -118,7 +189,7 @@ async def close(self):
                 except Exception as e:
                     self.logger.error(f"Error unloading extension {extension}: {e}")
             
-            # Close database connections if they exist
+            # Close database connections
             if hasattr(self, 'database') and self.database:
                 try:
                     await self.database.close()
