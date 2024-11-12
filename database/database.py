@@ -1,11 +1,7 @@
 """Database connection handling."""
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-import logging
-
-# Import all models so they're registered with Base
-#from .models import Player, Transaction
-#from .mixer_models import MixerDraw, MixerTicket, MixerPotEntry 
+import logging 
 
 logger = logging.getLogger(__name__)
 

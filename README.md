@@ -1,4 +1,4 @@
-# Name: FFS (Multi-Economy Discord Bot)
+# Name: FoxBot (Multi-Economy Discord Bot)
 
 ## Description
 A Discord bot that provides a modular framework for connecting multiple Drip economies within a meta-gaming environment.
@@ -16,6 +16,7 @@ expand the userbase and circulate tokens between economies. Drip may use this to
 The initial proof of concept game is a token mixer/lottery where players from any connected Drip points economy may add their 
 points into the Mixer for a change to win a share of the pot of tokens when the drawing is held. It is expected ecosystem 
 managers will _donate_ points into the mixer so it becomes a faucet for points distribution for players. 
+
 0. `/mixer_init [ duration ]` in minutes (<5 for testing)
 1. `/mixer_add [ amount ] [ token ] [ is_donation ]` multiple players add tokens from any connected points economy and receive a ticket. Setting the __is_donation__ flag will not provide a ticket for the drawing.
 2. `/mixer_status` display details about the current drawing
@@ -92,7 +93,8 @@ discord_bot/
 │   ├── local_economy.py            # Local Economy commands
 │   ├── ffs_economy.py              # FFS Economy commands
 │   ├── hackathon_economy.py        # Hackathon Economy commands
-│   └── mixer_economy.py            # Mixer/Lottery commands
+│   ├── mixer_economy.py            # Mixer/Lottery commands
+│   └── staminah_economy.py         # Staminah mining commands
 │
 ├── config/
 │   ├── __init__.py
@@ -111,7 +113,8 @@ discord_bot/
 │   ├── local_points_service.py         # Local economy service
 │   ├── mixer_service.py                # Mixer economy service
 │   ├── transfer_interface.py           # Interface definitions
-│   └── transfer_service.py             # Cross-economy transfer logic
+│   ├── transfer_service.py             # Cross-economy transfer logic
+│   └── staminah_service.py             # Staminah mining logic
 │
 ├── utils/
 │   ├── __init__.py

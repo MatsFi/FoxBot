@@ -4,7 +4,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, NamedTuple
 from sqlalchemy import select, func, desc
-from database.mixer_models import MixerDraw, MixerTicket, MixerPotEntry
+from database.models import MixerDraw, MixerTicket, MixerPotEntry
 from services.transfer_interface import ExternalEconomyInterface
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class MixerService:
         """Get the currently active draw if one exists."""
         async with self.db.session() as session:
             query = select(MixerDraw).where(
-                MixerDraw.is_completed == False,
+                ~MixerDraw.is_completed,
                 MixerDraw.draw_time > datetime.utcnow()
             )
             result = await session.execute(query)
