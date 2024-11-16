@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands, tasks
 from config.settings import BotConfig
 from database.database import Database
+from sqlalchemy import text
 
 class DiscordBot(commands.Bot):
     """Main bot class with core functionality."""
@@ -90,7 +91,7 @@ class DiscordBot(commands.Bot):
             await self.load_extension('cogs.local_economy')  # This sets up transfer_service
             await self.load_extension('cogs.hackathon_economy')
             await self.load_extension('cogs.ffs_economy')
-            await self.load_extension('cogs.mixer_economy')
+#            await self.load_extension('cogs.mixer_economy')
             await self.tree.sync()
             
             # Start health check tasks
@@ -132,7 +133,7 @@ class DiscordBot(commands.Bot):
             db_healthy = False
             try:
                 async with self.database.session() as session:
-                    await session.execute("SELECT 1")
+                    await session.execute(text("SELECT 1"))
                 db_healthy = True
             except Exception as e:
                 self.logger.error(f"Database health check failed: {e}")
