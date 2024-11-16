@@ -1,7 +1,8 @@
 """SQLAlchemy models for the database."""
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
-from sqlalchemy.orm import relationship
+from typing import List
+from sqlalchemy import Column, Integer, Boolean, String, Text, DateTime, ForeignKey, JSON
+from sqlalchemy.orm import relationship, Mapped
 from .database import Base
 
 def update_timestamp(mapper, connection, target):
@@ -32,3 +33,65 @@ class Transaction(Base):
 
     # Relationship with player
     player = relationship("Player", back_populates="transactions")
+
+class Prediction(Base):
+    """Model for prediction markets."""
+    __tablename__ = 'predictions'
+
+    id: Mapped[int] = Column(Integer, primary_key=True)
+    question: Mapped[str] = Column(String, nullable=False)
+    options: Mapped[List[str]] = Column(JSON, nullable=False)  # List of possible outcomes
+    creator_id: Mapped[str] = Column(String, nullable=False)  # Discord ID
+    category: Mapped[str] = Column(String, nullable=True)
+    created_at: Mapped[datetime] = Column(DateTime, default=datetime.utcnow)
+    end_time: Mapped[datetime] = Column(DateTime, nullable=False)
+    resolved: Mapped[bool] = Column(Boolean, default=False)
+    refunded: Mapped[bool] = Column(Boolean, default=False)
+    result: Mapped[str] = Column(String, nullable=True)  # Winning option
+    
+    # Relationship to bets
+    bets: Mapped[List["PredictionBet"]] = relationship("PredictionBet", back_populates="prediction", cascade="all, delete-orphan")
+
+    @property
+    def total_pool(self) -> int:
+        """Calculate total amount bet on this prediction."""
+        return sum(bet.amount for bet in self.bets)
+
+    def get_option_total(self, option: str) -> int:
+        """Calculate total amount bet on a specific option."""
+        return sum(bet.amount for bet in self.bets if bet.option == option)
+
+    def get_odds(self) -> dict:
+        """Calculate current odds for each option."""
+        total_pool = self.total_pool
+        odds = {}
+        for option in self.options:
+            option_total = self.get_option_total(option)
+            odds[option] = (total_pool / option_total) if option_total > 0 else float('inf')
+        return odds
+
+class PredictionBet(Base):
+    """Model for individual bets on predictions."""
+    __tablename__ = 'prediction_bets'
+
+    id: Mapped[int] = Column(Integer, primary_key=True)
+    prediction_id: Mapped[int] = Column(Integer, ForeignKey('predictions.id', ondelete='CASCADE'))
+    user_id: Mapped[str] = Column(String, nullable=False)  # Discord ID
+    option: Mapped[str] = Column(String, nullable=False)
+    amount: Mapped[int] = Column(Integer, nullable=False)
+    placed_at: Mapped[datetime] = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationship to prediction
+    prediction: Mapped[Prediction] = relationship("Prediction", back_populates="bets")
+
+    def calculate_payout(self) -> int:
+        """Calculate payout if this bet wins."""
+        if not self.prediction.resolved or self.prediction.result != self.option:
+            return 0
+        
+        winning_pool = self.prediction.get_option_total(self.option)
+        if winning_pool == 0:
+            return 0
+            
+        total_pool = self.prediction.total_pool
+        return int(total_pool * (self.amount / winning_pool))
