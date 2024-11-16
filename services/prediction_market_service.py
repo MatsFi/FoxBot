@@ -3,13 +3,23 @@ from typing import List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import Prediction, PredictionBet
-from utils.exceptions import InsufficientPointsError, InvalidAmountError
+from utils.exceptions import (
+    PredictionNotFoundError,
+    PredictionAlreadyResolvedError,
+    BettingPeriodEndedError,
+    InvalidOptionError,
+    UnauthorizedResolutionError,
+    PredictionAlreadyRefundedError,
+    InvalidPredictionDurationError,
+)
 from .local_points_service import LocalPointsService
+from config.settings import PredictionMarketConfig
 
 class PredictionMarketService:
-    def __init__(self, session: AsyncSession, points_service: LocalPointsService):
+    def __init__(self, session: AsyncSession, points_service: LocalPointsService, config: PredictionMarketConfig):
         self.session = session
         self.points_service = points_service
+        self.config = config
 
     async def create_prediction(
         self,
@@ -20,6 +30,22 @@ class PredictionMarketService:
         category: Optional[str] = None
     ) -> Prediction:
         """Create a new prediction market."""
+        duration_minutes = int((end_time - datetime.utcnow()).total_seconds() / 60)
+        
+        if duration_minutes < self.config.min_duration_minutes:
+            raise InvalidPredictionDurationError(
+                duration_minutes,
+                self.config.min_duration_minutes,
+                self.config.max_duration_minutes
+            )
+            
+        if duration_minutes > self.config.max_duration_minutes:
+            raise InvalidPredictionDurationError(
+                duration_minutes,
+                self.config.min_duration_minutes,
+                self.config.max_duration_minutes
+            )
+            
         if len(options) < 2:
             raise ValueError("Prediction must have at least 2 options")
             
@@ -42,22 +68,24 @@ class PredictionMarketService:
         amount: int
     ) -> PredictionBet:
         """Place a bet on a prediction."""
-        # Validate amount
-        if amount <= 0:
-            raise InvalidAmountError(amount)
-
+        if amount < self.config.min_bet:
+            raise InvalidAmountError(f"Bet must be at least {self.config.min_bet} points")
+            
+        if amount > self.config.max_bet:
+            raise InvalidAmountError(f"Bet cannot exceed {self.config.max_bet} points")
+            
         # Get prediction
         prediction = await self.get_prediction(prediction_id)
         if not prediction:
-            raise ValueError("Prediction not found")
+            raise PredictionNotFoundError(prediction_id)
             
         # Validate prediction state
         if prediction.resolved:
-            raise ValueError("Cannot bet on resolved prediction")
+            raise PredictionAlreadyResolvedError(prediction_id)
         if prediction.end_time <= datetime.utcnow():
-            raise ValueError("Betting period has ended")
+            raise BettingPeriodEndedError(prediction_id, prediction.end_time)
         if option not in prediction.options:
-            raise ValueError("Invalid option")
+            raise InvalidOptionError(option, prediction.options)
 
         # Check user balance and transfer points
         balance = await self.points_service.get_balance(user_id)

@@ -8,7 +8,7 @@ from typing import Optional
 from aiohttp import web
 import discord
 from discord.ext import commands, tasks
-from config.settings import BotConfig
+from config.settings import load_config
 from database.database import Database
 from sqlalchemy import text
 
@@ -18,7 +18,7 @@ class DiscordBot(commands.Bot):
     def __init__(self):
         """Initialize the bot with basic configuration."""
         # Load configuration first
-        self.config = BotConfig.from_env()
+        self.config = load_config()
         
         # Set up intents
         intents = discord.Intents.default()
@@ -26,7 +26,7 @@ class DiscordBot(commands.Bot):
         intents.members = True
 
         super().__init__(
-            command_prefix=commands.when_mentioned_or('!'),
+            command_prefix=commands.when_mentioned_or(self.config.command_prefix),
             intents=intents,
             help_command=commands.DefaultHelpCommand()
         )
@@ -36,7 +36,7 @@ class DiscordBot(commands.Bot):
         
         # Set up logging
         self.logger = logging.getLogger('discord_bot')
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(self.config.logging.level)
         
         # Create logs directory
         log_dir = Path("logs")
@@ -49,19 +49,13 @@ class DiscordBot(commands.Bot):
             mode="a"  # Append mode instead of write
         )
         file_handler.setFormatter(
-            logging.Formatter(
-                '[%(asctime)s] %(levelname)s: %(message)s',
-                '%Y-%m-%d %H:%M:%S'
-            )
+            logging.Formatter(self.config.logging.format)
         )
         
         # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(
-            logging.Formatter(
-                '[%(asctime)s] %(levelname)s: %(message)s',
-                '%Y-%m-%d %H:%M:%S'
-            )
+            logging.Formatter(self.config.logging.format)
         )
         
         self.logger.addHandler(file_handler)
@@ -82,8 +76,8 @@ class DiscordBot(commands.Bot):
             self.logger.info(f"Discord.py version: {discord.__version__}")
             
             # Initialize database
-            self.logger.info(f"Connecting to database at {self.config.database_url}")
-            self.database = Database(self.config.database_url)
+            self.logger.info(f"Connecting to database at {self.config.database.url}")
+            self.database = Database(self.config.database.url)
             await self.database.create_all()
             
             # Load cogs in specific order: local_economy must be first
@@ -91,14 +85,22 @@ class DiscordBot(commands.Bot):
             await self.load_extension('cogs.local_economy')  # This sets up transfer_service
             await self.load_extension('cogs.hackathon_economy')
             await self.load_extension('cogs.ffs_economy')
-            await self.tree.sync()
             
-            # Start health check tasks
-            self.heartbeat.start()
-            self.start_web_server.start()
+            # Sync commands if guild_id is set
+            if self.config.guild_id:
+                guild = discord.Object(id=int(self.config.guild_id))
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            else:
+                await self.tree.sync()
+            
+            # Start health check tasks if web server is enabled
+            if self.config.web.enabled:
+                self.heartbeat.start()
+                self.start_web_server.start()
+            
             self.start_timestamp = discord.utils.utcnow()
-            
-            self.logger.info(f"Bot initialized successfully")
+            self.logger.info("Bot initialized successfully")
             
         except Exception as e:
             self.logger.error(f"Error during setup: {str(e)}")
@@ -115,9 +117,13 @@ class DiscordBot(commands.Bot):
         """Start the web server for health checks."""
         runner = web.AppRunner(self.web_app)
         await runner.setup()
-        site = web.TCPSite(runner, host='0.0.0.0', port=self.config.web_port)
+        site = web.TCPSite(
+            runner,
+            host=self.config.web.host,
+            port=self.config.web.port
+        )
         await site.start()
-        self.logger.info(f"Health check server started on port {self.config.web_port}")
+        self.logger.info(f"Health check server started on {self.config.web.host}:{self.config.web.port}")
 
     async def health_check(self, request: web.Request) -> web.Response:
         """Handle health check requests."""
@@ -133,6 +139,7 @@ class DiscordBot(commands.Bot):
             try:
                 async with self.database.session() as session:
                     await session.execute(text("SELECT 1"))
+                    await session.commit()
                 db_healthy = True
             except Exception as e:
                 self.logger.error(f"Database health check failed: {e}")
@@ -178,8 +185,9 @@ class DiscordBot(commands.Bot):
             self.logger.info("Bot is shutting down...")
             
             # Stop tasks
-            self.heartbeat.cancel()
-            self.start_web_server.cancel()
+            if self.config.web.enabled:
+                self.heartbeat.cancel()
+                self.start_web_server.cancel()
             
             # Cleanup cogs
             for extension in list(self.extensions.keys()):

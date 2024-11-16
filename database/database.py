@@ -26,6 +26,11 @@ class Database:
         )
         self.logger = logging.getLogger(__name__)
 
+    @property
+    def session(self):
+        """Get a session factory for creating new database sessions."""
+        return self.async_session
+
     async def create_all(self):
         """Create all database tables."""
         try:
