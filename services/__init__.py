@@ -9,7 +9,6 @@ from .external_service_adapters import (
 from .hackathon_points_service import HackathonPointsManager
 from .ffs_points_service import FFSPointsManager
 from .transfer_service import CrossEconomyTransferService
-from .mixer_service import MixerService, DrawingSummary
 
 __all__ = [
     'LocalPointsService',
@@ -21,6 +20,4 @@ __all__ = [
     'HackathonPointsManager',
     'FFSPointsManager',
     'CrossEconomyTransferService',
-    'MixerService',
-    'DrawingSummary',
 ]
