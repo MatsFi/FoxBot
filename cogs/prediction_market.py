@@ -10,6 +10,7 @@ from utils.exceptions import (
     InsufficientPointsError,
     InvalidAmountError
 )
+from utils.permissions import PredictionMarketPermissions
 
 class PredictionMarket(commands.Cog):
     """Prediction market commands for betting on outcomes."""
@@ -17,6 +18,7 @@ class PredictionMarket(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.service: PredictionMarketService = bot.prediction_market_service
+        self.permissions = PredictionMarketPermissions(bot)
 
     @app_commands.guild_only()
     @app_commands.command(name="create_prediction", description="Create a new prediction market")
@@ -38,17 +40,12 @@ class PredictionMarket(commands.Cog):
         await interaction.response.defer(ephemeral=False)
         
         try:
-            # Check creator role if configured
-            if self.bot.config.prediction_market.creator_role_id:
-                role = interaction.guild.get_role(
-                    int(self.bot.config.prediction_market.creator_role_id)
+            if not await self.permissions.can_create_prediction(interaction):
+                await interaction.response.send_message(
+                    "You don't have permission to create predictions.",
+                    ephemeral=True
                 )
-                if not role or role not in interaction.user.roles:
-                    await interaction.followup.send(
-                        "You don't have permission to create predictions.", 
-                        ephemeral=True
-                    )
-                    return
+                return
 
             # Process options
             options_list = [opt.strip() for opt in options.split(",")]
@@ -131,6 +128,13 @@ class PredictionMarket(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
+            if not await self.permissions.can_bet(interaction):
+                await interaction.response.send_message(
+                    "You don't have permission to place bets.",
+                    ephemeral=True
+                )
+                return
+
             # Get active predictions
             predictions = await self.service.get_active_predictions()
             if not predictions:
