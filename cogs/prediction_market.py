@@ -13,6 +13,7 @@ from utils.exceptions import (
 from utils.permissions import PredictionMarketPermissions
 from utils.logging import setup_logger
 import logging
+import math
 
 # TODO: Consider adding configuration values for:
 # - Minimum bet amount
@@ -166,7 +167,7 @@ class ResolutionView(discord.ui.View):
     def setup_view(self):
         """Set up all view components."""
         # Prediction Select
-        prediction_select = discord.ui.Select(
+        self.prediction_select = discord.ui.Select(
             placeholder="Select a prediction to resolve...",
             options=[
                 discord.SelectOption(
@@ -179,8 +180,8 @@ class ResolutionView(discord.ui.View):
             row=0,
             custom_id="prediction_select"
         )
-        prediction_select.callback = self.on_prediction_select
-        self.add_item(prediction_select)
+        self.prediction_select.callback = self.on_prediction_select
+        self.add_item(self.prediction_select)
 
         # Result Select (initially disabled)
         self.result_select = discord.ui.Select(
@@ -217,13 +218,21 @@ class ResolutionView(discord.ui.View):
             pred_id = interaction.data['values'][0]
             self.selected_prediction = self.predictions[pred_id]
             
+            # Update prediction select to show selected value
+            for option in self.prediction_select.options:
+                option.default = (option.value == pred_id)
+            
             # Update result select
             self.result_select.disabled = False
+            self.result_select.placeholder = "Select winning option..."
             self.result_select.options = [
-                discord.SelectOption(label=option, value=option)
+                discord.SelectOption(
+                    label=option,
+                    value=option,
+                    description=f"Option for: {self.selected_prediction.question[:50]}..."
+                )
                 for option in self.selected_prediction.options
             ]
-            self.result_select.placeholder = "Select winning option..."
             
             # Update the message
             await interaction.response.edit_message(view=self)
@@ -236,7 +245,13 @@ class ResolutionView(discord.ui.View):
         """Handle result selection."""
         self.logger.info(f"Result select interaction received")
         try:
-            self.selected_result = interaction.data['values'][0]
+            selected_value = interaction.data['values'][0]
+            self.selected_result = selected_value
+            
+            # Update result select to show selected value
+            for option in self.result_select.options:
+                option.default = (option.value == selected_value)
+            
             self.resolve_button.disabled = False
             await interaction.response.edit_message(view=self)
             
@@ -297,7 +312,6 @@ class ResolutionView(discord.ui.View):
             await interaction.response.send_message(f"Error resolving prediction: {str(e)}", ephemeral=True)
 
 class BettingView(BaseMarketView):
-    """View for placing bets."""
     def __init__(self, cog, predictions: List[Prediction]):
         super().__init__(cog)
         self.predictions = predictions
@@ -305,10 +319,11 @@ class BettingView(BaseMarketView):
         self.selected_option: Optional[str] = None
         self.selected_economy: Optional[str] = None
         
-        self.add_prediction_select()
+        self.setup_view()
 
-    def add_prediction_select(self):
-        select = discord.ui.Select(
+    def setup_view(self):
+        """Initial view setup with prediction select."""
+        prediction_select = discord.ui.Select(
             placeholder="Select a prediction...",
             options=[
                 discord.SelectOption(
@@ -317,134 +332,294 @@ class BettingView(BaseMarketView):
                     value=str(p.id)
                 )
                 for p in self.predictions
-            ]
+            ],
+            row=0
         )
+        prediction_select.callback = self.on_prediction_select
+        self.add_item(prediction_select)
 
-        async def prediction_callback(interaction: discord.Interaction):
-            async def action():
-                pred_id = int(select.values[0])
-                self.selected_prediction = next(p for p in self.predictions if p.id == pred_id)
-                self.clear_items()
-                await self.add_option_select(interaction)
-
-            await self.handle_interaction(interaction, action)
-
-        select.callback = prediction_callback
-        self.add_item(select)
-
-    def add_option_select(self):
-        """Add the option selection dropdown."""
-        self.clear_items()
-        
-        # Create options list with current bet amounts
-        options = []
-        total_pool = sum(bet.amount for bet in self.selected_prediction.bets)
-        
-        for option in self.selected_prediction.options:
-            option_total = sum(
-                bet.amount 
-                for bet in self.selected_prediction.bets 
-                if bet.option == option
-            )
-            percentage = (option_total / total_pool * 100) if total_pool > 0 else 0
-            options.append(
-                discord.SelectOption(
-                    label=option,
-                    description=f"{option_total:,} points ({percentage:.1f}%)",
-                    value=option
-                )
-            )
-        
-        select = discord.ui.Select(
-            placeholder="Choose your prediction...",
-            options=options
-        )
-        
-        async def option_callback(interaction: discord.Interaction):
-            try:
-                self.selected_option = select.values[0]
-                
-                # Update view with economy select
-                await self.add_economy_select(interaction)
-            except Exception as e:
-                self.logger.error(f"Error in option selection: {e}")
-                await interaction.response.send_message(
-                    "An error occurred while processing your selection.",
-                    ephemeral=True
-                )
-        
-        select.callback = option_callback
-        self.add_item(select)
-
-    async def add_economy_select(self, interaction: discord.Interaction):
-        """Add the economy selection dropdown."""
-        self.clear_items()
-        
+    async def on_prediction_select(self, interaction: discord.Interaction):
+        """Handle prediction selection."""
         try:
-            self.logger.info("Getting available economies...")
-            available_economies = self.cog.service.get_available_economies()
-            self.logger.info(f"Retrieved economies: {available_economies}")
+            # Get selected prediction
+            pred_id = int(interaction.data['values'][0])
+            self.selected_prediction = next(p for p in self.predictions if p.id == pred_id)
             
+            # Clear current items
+            self.clear_items()
+            
+            # Add option select
+            option_select = discord.ui.Select(
+                placeholder="Select your prediction...",
+                options=[
+                    discord.SelectOption(label=option, value=option)
+                    for option in self.selected_prediction.options
+                ],
+                row=0
+            )
+            option_select.callback = self.on_option_select
+            self.add_item(option_select)
+            
+            await interaction.response.edit_message(view=self)
+            
+        except Exception as e:
+            self.logger.error(f"Error in prediction selection: {e}")
+            await interaction.response.send_message(
+                "An error occurred. Please try again.",
+                ephemeral=True
+            )
+
+    async def on_option_select(self, interaction: discord.Interaction):
+        """Handle option selection."""
+        try:
+            self.selected_option = interaction.data['values'][0]
+            self.clear_items()
+            
+            # Get available economies
+            available_economies = self.cog.service.get_available_economies()
             if not available_economies:
-                self.logger.warning("No external economies found!")
                 await interaction.response.send_message(
-                    "❌ No external economies are available for betting.\n"
-                    "This is likely a configuration issue - please notify the bot administrator.",
+                    "❌ No external economies are available for betting.",
                     ephemeral=True
                 )
                 return
             
-            # Create options for each available economy
-            options = [
-                discord.SelectOption(
-                    label=f"{economy.upper()} Points",
-                    value=economy
-                )
-                for economy in available_economies
-            ]
-            
-            select = discord.ui.Select(
+            # Add economy select
+            economy_select = discord.ui.Select(
                 placeholder="Select which points to bet with...",
-                options=options
-            )
-            
-            async def economy_callback(interaction: discord.Interaction):
-                try:
-                    self.selected_economy = select.values[0]
-                    
-                    # Show amount modal
-                    modal = BetAmountModal(
-                        self.cog,
-                        self.selected_prediction,
-                        self.selected_option,
-                        self.selected_economy
+                options=[
+                    discord.SelectOption(
+                        label=f"{economy.upper()} Points",
+                        value=economy
                     )
-                    await interaction.response.send_modal(modal)
-                except Exception as e:
-                    self.logger.error(f"Error in economy selection: {e}")
-                    await interaction.response.send_message(
-                        "An error occurred while processing your selection.",
-                        ephemeral=True
-                    )
-            
-            select.callback = economy_callback
-            self.add_item(select)
-            
-            await interaction.response.edit_message(
-                content=(
-                    f"Prediction: {self.selected_prediction.question}\n"
-                    f"Your choice: {self.selected_option}\n"
-                    f"Select which points to bet with:"
-                ),
-                view=self
+                    for economy in available_economies
+                ],
+                row=0
             )
+            economy_select.callback = self.on_economy_select
+            self.add_item(economy_select)
+            
+            await interaction.response.edit_message(view=self)
             
         except Exception as e:
-            self.logger.error(f"Error setting up economy selection: {e}")
+            self.logger.error(f"Error in option selection: {e}")
             await interaction.response.send_message(
-                "An error occurred while setting up economy selection.",
+                "An error occurred. Please try again.",
                 ephemeral=True
             )
+
+    async def on_economy_select(self, interaction: discord.Interaction):
+        """Handle economy selection."""
+        try:
+            self.selected_economy = interaction.data['values'][0]
+            
+            # Show amount modal
+            modal = BetAmountModal(
+                self.cog,
+                self.selected_prediction,
+                self.selected_option,
+                self.selected_economy
+            )
+            await interaction.response.send_modal(modal)
+            
+        except Exception as e:
+            self.logger.error(f"Error in economy selection: {e}")
+            await interaction.response.send_message(
+                "An error occurred. Please try again.",
+                ephemeral=True
+            )
+
+class PredictionsListView(BaseMarketView):
+    """View for listing predictions."""
+    def __init__(self, cog, predictions: List[Prediction], show_all: bool = False):
+        super().__init__(cog)
+        self.predictions = predictions
+        self.current_page = 0
+        self.items_per_page = 5
+        self.show_all = show_all
+        self.setup_view()
+
+    def setup_view(self):
+        """Set up navigation buttons."""
+        # Previous page button
+        self.prev_button = discord.ui.Button(
+            label="Previous",
+            style=discord.ButtonStyle.gray,
+            disabled=True,
+            row=1
+        )
+        self.prev_button.callback = self.on_prev_click
+        self.add_item(self.prev_button)
+
+        # Next page button
+        self.next_button = discord.ui.Button(
+            label="Next",
+            style=discord.ButtonStyle.gray,
+            disabled=len(self.predictions) <= self.items_per_page,
+            row=1
+        )
+        self.next_button.callback = self.on_next_click
+        self.add_item(self.next_button)
+
+    def get_current_embed(self) -> discord.Embed:
+        """Get embed for current page."""
+        start_idx = self.current_page * self.items_per_page
+        end_idx = start_idx + self.items_per_page
+        current_items = self.predictions[start_idx:end_idx]
+
+        embed = discord.Embed(
+            title="🎯 Active Predictions" if not self.show_all else "🎯 All Predictions",
+            color=discord.Color.blue()
+        )
+
+        for pred in current_items:
+            status = "🟢 Active" if not pred.resolved else "🔴 Resolved"
+            time_left = "Ended" if pred.end_time <= datetime.now(timezone.utc) else \
+                       f"Ends <t:{int(pred.end_time.timestamp())}:R>"
+            
+            field_value = (
+                f"Status: {status}\n"
+                f"Options: {', '.join(pred.options)}\n"
+                f"Total Pool: {pred.total_pool:,} points\n"
+                f"{time_left}"
+            )
+            if pred.resolved:
+                field_value += f"\nWinner: {pred.result}"
+
+            embed.add_field(
+                name=f"ID {pred.id}: {pred.question}",
+                value=field_value,
+                inline=False
+            )
+
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.get_max_pages()}")
+        return embed
+
+    def get_max_pages(self) -> int:
+        """Get maximum number of pages."""
+        return max(1, math.ceil(len(self.predictions) / self.items_per_page))
+
+    async def on_prev_click(self, interaction: discord.Interaction):
+        """Handle previous page button click."""
+        try:
+            self.current_page = max(0, self.current_page - 1)
+            self.update_button_states()
+            await interaction.response.edit_message(embed=self.get_current_embed(), view=self)
+        except Exception as e:
+            self.logger.error(f"Error handling previous page: {e}")
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+
+    async def on_next_click(self, interaction: discord.Interaction):
+        """Handle next page button click."""
+        try:
+            self.current_page = min(self.get_max_pages() - 1, self.current_page + 1)
+            self.update_button_states()
+            await interaction.response.edit_message(embed=self.get_current_embed(), view=self)
+        except Exception as e:
+            self.logger.error(f"Error handling next page: {e}")
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+
+    def update_button_states(self):
+        """Update button disabled states."""
+        self.prev_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.get_max_pages() - 1
+
+class RefundView(BaseMarketView):
+    """View for refunding predictions."""
+    def __init__(self, cog, predictions: List[Prediction]):
+        super().__init__(cog)
+        self.predictions = {str(p.id): p for p in predictions}
+        self.selected_prediction: Optional[Prediction] = None
+        self.setup_view()
+
+    def setup_view(self):
+        """Set up the refund selection view."""
+        # Prediction Select
+        self.prediction_select = discord.ui.Select(
+            placeholder="Select a prediction to refund...",
+            options=[
+                discord.SelectOption(
+                    label=f"ID {p_id} | {len(p.bets)} bets | {p.total_pool:,} points",
+                    description=f"Q: {p.question[:50]}..." if len(p.question) > 50 else f"Q: {p.question}",
+                    value=p_id
+                )
+                for p_id, p in self.predictions.items()
+            ],
+            row=0
+        )
+        self.prediction_select.callback = self.on_prediction_select
+        self.add_item(self.prediction_select)
+
+        # Refund Button (initially disabled)
+        self.refund_button = discord.ui.Button(
+            label="Refund Prediction",
+            style=discord.ButtonStyle.danger,
+            disabled=True,
+            row=1
+        )
+        self.refund_button.callback = self.on_refund_click
+        self.add_item(self.refund_button)
+
+    async def on_prediction_select(self, interaction: discord.Interaction):
+        """Handle prediction selection."""
+        try:
+            pred_id = interaction.data['values'][0]
+            self.selected_prediction = self.predictions[pred_id]
+            
+            # Update prediction select to show selected value
+            for option in self.prediction_select.options:
+                option.default = (option.value == pred_id)
+            
+            self.refund_button.disabled = False
+            await interaction.response.edit_message(view=self)
+        except Exception as e:
+            self.logger.error(f"Error in prediction selection: {e}")
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
+
+    async def on_refund_click(self, interaction: discord.Interaction):
+        """Handle refund button click."""
+        try:
+            if not self.selected_prediction:
+                await interaction.response.send_message(
+                    "Please select a prediction first.",
+                    ephemeral=True
+                )
+                return
+
+            refunds = await self.cog.service.refund_prediction(
+                prediction_id=self.selected_prediction.id,
+                refunder_id=str(interaction.user.id)
+            )
+
+            embed = discord.Embed(
+                title="🔄 Prediction Refunded!",
+                description=self.selected_prediction.question,
+                color=discord.Color.orange()
+            )
+
+            if refunds:
+                refund_text = "\n".join(
+                    f"<@{user_id}>: {amount:,} {economy} points"
+                    for user_id, amount, economy in refunds
+                )
+                embed.add_field(
+                    name="Refunds",
+                    value=refund_text,
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="Refunds",
+                    value="No bets to refund",
+                    inline=False
+                )
+
+            await interaction.response.edit_message(content=None, embed=embed, view=None)
+            self.stop()
+
+        except Exception as e:
+            self.logger.error(f"Error in refund button click: {e}")
+            await interaction.response.send_message(f"Error refunding prediction: {str(e)}", ephemeral=True)
 
 class PredictionMarket(commands.Cog):
     """Prediction market commands for betting on outcomes."""

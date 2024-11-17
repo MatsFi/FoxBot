@@ -190,16 +190,12 @@ class PredictionMarketService:
         """Get predictions that can be resolved by this user."""
         try:
             async with self.session_factory() as session:
-                # Get predictions that:
-                # 1. Were created by this user
-                # 2. Haven't been resolved yet
-                # 3. Have ended (end_time is in the past)
                 stmt = (
                     select(Prediction)
                     .where(Prediction.creator_id == creator_id)
                     .where(Prediction.resolved == False)
                     .where(Prediction.end_time <= datetime.now(timezone.utc))
-                    .options(selectinload(Prediction.bets))
+                    .options(selectinload(Prediction.bets))  # Eagerly load bets
                 )
                 
                 result = await session.execute(stmt)
@@ -281,12 +277,21 @@ class PredictionMarketService:
         try:
             async with self.session_factory() as session:
                 async with session.begin():
-                    prediction = await self.get_prediction(prediction_id)
+                    # Get prediction with bets eagerly loaded
+                    stmt = (
+                        select(Prediction)
+                        .where(Prediction.id == prediction_id)
+                        .options(selectinload(Prediction.bets))  # Eagerly load bets
+                        .with_for_update()
+                    )
+                    result_proxy = await session.execute(stmt)
+                    prediction = result_proxy.scalar_one_or_none()
+                    
                     if not prediction:
                         raise PredictionNotFoundError(prediction_id)
 
                     if prediction.resolved:
-                        raise PredictionAlreadyResolvedError()
+                        raise PredictionAlreadyResolvedError("This prediction has already been resolved")
 
                     if prediction.creator_id != resolver_id:
                         raise UnauthorizedResolutionError()
@@ -294,32 +299,25 @@ class PredictionMarketService:
                     if result not in prediction.options:
                         raise InvalidOptionError(result)
 
-                    # Mark prediction as resolved
-                    prediction.resolved = True
-                    prediction.result = result
+                    # Calculate total pool and winning pool
+                    total_pool = prediction.total_pool  # Now safe to access
+                    winning_pool = prediction.get_option_total(result)  # Now safe to access
 
-                    # Calculate and distribute payouts
+                    # Process payouts
                     payouts = []
-                    total_pool = prediction.total_pool
-                    winning_pool = prediction.get_option_total(result)
-
                     if winning_pool > 0:
                         for bet in prediction.bets:
                             if bet.option == result:
                                 payout = int((bet.amount / winning_pool) * total_pool)
                                 
-                                # Use transfer service for payouts
                                 if bet.source_economy != 'local':
                                     try:
                                         external_service = self.bot.transfer_service.get_external_service(bet.source_economy)
                                         if await external_service.add_points(int(bet.user_id), payout):
                                             payouts.append((bet.user_id, payout, bet.source_economy))
-                                        else:
-                                            self.logger.error(f"Failed to pay out {payout} {bet.source_economy} points to user {bet.user_id}")
                                     except ValueError as e:
                                         self.logger.error(f"Error during payout: {e}")
                                 else:
-                                    # Handle local economy payouts
                                     if await self.points_service.transfer(
                                         from_id="HOUSE",
                                         to_id=bet.user_id,
@@ -327,6 +325,11 @@ class PredictionMarketService:
                                         economy='local'
                                     ):
                                         payouts.append((bet.user_id, payout, 'local'))
+
+                    # Mark as resolved
+                    prediction.resolved = True
+                    prediction.result = result
+                    await session.commit()
 
                     return prediction, payouts
 
