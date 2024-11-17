@@ -36,9 +36,9 @@ class Database:
         try:
             # Import all models to ensure they're registered with Base
             from .models import (
-                Player,  # existing model
-                Prediction,  # new model
-                PredictionBet,  # new model
+                Player,
+                Prediction,
+                PredictionBet,
             )
             
             async with self.engine.begin() as conn:
@@ -50,4 +50,10 @@ class Database:
 
     async def close(self):
         """Close database connection."""
-        await self.engine.dispose()
+        try:
+            self.logger.info("Disposing database engine...")
+            await self.engine.dispose()
+            self.logger.info("Database engine disposed")
+        except Exception as e:
+            self.logger.error(f"Error closing database connection: {e}")
+            raise

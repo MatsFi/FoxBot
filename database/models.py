@@ -1,5 +1,5 @@
 """SQLAlchemy models for the database."""
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from sqlalchemy import Column, Integer, Boolean, String, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import relationship, Mapped
@@ -40,14 +40,14 @@ class Prediction(Base):
 
     id: Mapped[int] = Column(Integer, primary_key=True)
     question: Mapped[str] = Column(String, nullable=False)
-    options: Mapped[List[str]] = Column(JSON, nullable=False)  # List of possible outcomes
-    creator_id: Mapped[str] = Column(String, nullable=False)  # Discord ID
+    options: Mapped[List[str]] = Column(JSON, nullable=False)
+    creator_id: Mapped[str] = Column(String, nullable=False)
     category: Mapped[str] = Column(String, nullable=True)
-    created_at: Mapped[datetime] = Column(DateTime, default=datetime.utcnow)
-    end_time: Mapped[datetime] = Column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    end_time: Mapped[datetime] = Column(DateTime(timezone=True), nullable=False)
     resolved: Mapped[bool] = Column(Boolean, default=False)
     refunded: Mapped[bool] = Column(Boolean, default=False)
-    result: Mapped[str] = Column(String, nullable=True)  # Winning option
+    result: Mapped[str] = Column(String, nullable=True)
     
     # Relationship to bets
     bets: Mapped[List["PredictionBet"]] = relationship("PredictionBet", back_populates="prediction", cascade="all, delete-orphan")
@@ -75,10 +75,11 @@ class PredictionBet(Base):
     __tablename__ = 'prediction_bets'
 
     id: Mapped[int] = Column(Integer, primary_key=True)
-    prediction_id: Mapped[int] = Column(Integer, ForeignKey('predictions.id', ondelete='CASCADE'))
-    user_id: Mapped[str] = Column(String, nullable=False)  # Discord ID
+    prediction_id: Mapped[int] = Column(ForeignKey('predictions.id'))
+    user_id: Mapped[str] = Column(String, nullable=False)
     option: Mapped[str] = Column(String, nullable=False)
     amount: Mapped[int] = Column(Integer, nullable=False)
+    source_economy: Mapped[str] = Column(String, nullable=False)  # Track bet's economy source
     placed_at: Mapped[datetime] = Column(DateTime, default=datetime.utcnow)
     
     # Relationship to prediction

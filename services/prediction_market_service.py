@@ -1,91 +1,58 @@
-from datetime import datetime, timedelta
-import asyncio
-from typing import List, Optional, Tuple, Dict
-from sqlalchemy import select, and_
-from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime
+from typing import List, Optional, Tuple, Literal
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from database.models import Prediction, PredictionBet
 from utils.exceptions import (
     PredictionNotFoundError,
-    PredictionAlreadyResolvedError,
-    BettingPeriodEndedError,
-    InvalidOptionError,
-    UnauthorizedResolutionError,
-    PredictionAlreadyRefundedError,
-    InvalidPredictionDurationError,
+    InsufficientPointsError,
+    InvalidAmountError
 )
-from .local_points_service import LocalPointsService
-from config.settings import PredictionMarketConfig
+from sqlalchemy.orm import selectinload
+import logging
 
 class PredictionMarketService:
-    def __init__(self, session: AsyncSession, points_service: LocalPointsService, config: PredictionMarketConfig):
-        self.session = session
-        self.points_service = points_service
+    def __init__(self, session_factory: async_sessionmaker, transfer_service, config):
+        self.session_factory = session_factory
+        self.transfer_service = transfer_service
         self.config = config
-        self._active_predictions: Dict[int, Prediction] = {}
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._market_balance = {}
+        self._running = False
+        self.logger = logging.getLogger(__name__)
 
     async def start(self):
-        """Initialize the service and start background tasks."""
-        # Load active predictions into memory
-        query = select(Prediction).where(
-            and_(
-                Prediction.resolved == False,
-                Prediction.end_time > datetime.utcnow()
-            )
-        )
-        result = await self.session.execute(query)
-        predictions = result.scalars().all()
+        """Initialize the service and load existing predictions."""
+        self.logger.info("Starting prediction market service...")
+        self._running = True
         
-        for prediction in predictions:
-            self._active_predictions[prediction.id] = prediction
-
-        # Start cleanup task
-        if not self._cleanup_task:
-            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        # Load existing predictions into memory
+        query = select(Prediction).where(Prediction.resolved == False)
+        
+        async with self.session_factory() as session:
+            result = await session.execute(query)
+            active_predictions = result.scalars().all()
+            
+            # Initialize market balances
+            for pred in active_predictions:
+                self._market_balance[pred.id] = {}
+                for bet in pred.bets:
+                    if bet.source_economy not in self._market_balance[pred.id]:
+                        self._market_balance[pred.id][bet.source_economy] = 0
+                    self._market_balance[pred.id][bet.source_economy] += bet.amount
+                    
+        self.logger.info(f"Loaded {len(active_predictions)} active predictions")
+        self.logger.info("Prediction market service started")
 
     async def stop(self):
-        """Cleanup and stop background tasks."""
-        if self._cleanup_task:
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
-            self._cleanup_task = None
-        self._active_predictions.clear()
-
-    async def _cleanup_loop(self):
-        """Background task to cleanup expired predictions."""
-        while True:
-            try:
-                now = datetime.utcnow()
-                refund_threshold = now - timedelta(
-                    hours=self.config.resolution_window_hours
-                )
-
-                # Find predictions needing cleanup
-                to_remove = []
-                for pred_id, prediction in self._active_predictions.items():
-                    if prediction.end_time <= refund_threshold:
-                        # Auto-refund if not resolved
-                        if not prediction.resolved:
-                            await self.refund_prediction(pred_id)
-                        to_remove.append(pred_id)
-                    elif prediction.resolved:
-                        to_remove.append(pred_id)
-
-                # Remove from memory
-                for pred_id in to_remove:
-                    self._active_predictions.pop(pred_id, None)
-
-                # Sleep until next check
-                await asyncio.sleep(300)  # Check every 5 minutes
-
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.bot.logger.error(f"Error in prediction cleanup: {e}")
-                await asyncio.sleep(60)  # Retry after 1 minute on error
+        """Cleanup service resources."""
+        self.logger.info("Stopping prediction market service...")
+        self._running = False
+        
+        # Clear market balance cache
+        self._market_balance.clear()
+        self.logger.info("Market balance cache cleared")
+        
+        self.logger.info("Prediction market service stopped")
 
     async def create_prediction(
         self,
@@ -95,141 +62,174 @@ class PredictionMarketService:
         end_time: datetime,
         category: Optional[str] = None
     ) -> Prediction:
-        """Create a new prediction and cache it."""
-        prediction = await super().create_prediction(
-            question, options, creator_id, end_time, category
-        )
-        self._active_predictions[prediction.id] = prediction
-        return prediction
-
-    async def place_bet(
-        self,
-        prediction_id: int,
-        user_id: str,
-        option: str,
-        amount: int
-    ) -> PredictionBet:
-        """Place a bet on a prediction."""
-        if amount < self.config.min_bet:
-            raise InvalidAmountError(f"Bet must be at least {self.config.min_bet} points")
+        """Create a new prediction market."""
+        if len(options) < 2:
+            raise ValueError("Prediction must have at least 2 options")
             
-        if amount > self.config.max_bet:
-            raise InvalidAmountError(f"Bet cannot exceed {self.config.max_bet} points")
-            
-        # Get prediction
-        prediction = await self.get_prediction(prediction_id)
-        if not prediction:
-            raise PredictionNotFoundError(prediction_id)
-            
-        # Validate prediction state
-        if prediction.resolved:
-            raise PredictionAlreadyResolvedError(prediction_id)
-        if prediction.end_time <= datetime.utcnow():
-            raise BettingPeriodEndedError(prediction_id, prediction.end_time)
-        if option not in prediction.options:
-            raise InvalidOptionError(option, prediction.options)
-
-        # Check user balance and transfer points
-        balance = await self.points_service.get_balance(user_id)
-        if balance < amount:
-            raise InsufficientPointsError(user_id, amount, balance)
-
-        async with self.session.begin_nested():  # Create savepoint
-            # Transfer points to house
-            await self.points_service.transfer_points(
-                from_user_id=user_id,
-                to_user_id=None,  # House account
-                amount=amount
-            )
-
-            # Record bet
-            bet = PredictionBet(
-                prediction_id=prediction_id,
-                user_id=user_id,
-                option=option,
-                amount=amount
-            )
-            self.session.add(bet)
-            await self.session.commit()
-
-        return bet
-
-    async def resolve_prediction(
-        self,
-        prediction_id: int,
-        result: str,
-        resolver_id: str
-    ) -> Tuple[Prediction, List[Tuple[str, int]]]:
-        """Resolve prediction and remove from cache."""
-        prediction, payouts = await super().resolve_prediction(
-            prediction_id, result, resolver_id
-        )
-        self._active_predictions.pop(prediction_id, None)
-        return prediction, payouts
-
-    async def refund_prediction(self, prediction_id: int) -> List[Tuple[str, int]]:
-        """Refund all bets for a prediction."""
-        prediction = await self.get_prediction(prediction_id)
-        if not prediction:
-            raise ValueError("Prediction not found")
-            
-        if prediction.refunded:
-            raise ValueError("Prediction already refunded")
-
-        async with self.session.begin_nested():
-            prediction.refunded = True
-            prediction.resolved = True
-            
-            refunds = []
-            for bet in prediction.bets:
-                await self.points_service.add_points(bet.user_id, bet.amount)
-                refunds.append((bet.user_id, bet.amount))
-
-            await self.session.commit()
-            return refunds
+        async with self.session_factory() as session:
+            async with session.begin():
+                prediction = Prediction(
+                    question=question,
+                    options=options,
+                    creator_id=creator_id,
+                    end_time=end_time,
+                    category=category,
+                    resolved=False,
+                    refunded=False,
+                    created_at=datetime.utcnow()
+                )
+                
+                session.add(prediction)
+                await session.flush()
+                
+                self._market_balance[prediction.id] = {}
+                
+                return prediction
 
     async def get_prediction(self, prediction_id: int) -> Optional[Prediction]:
-        """Get prediction from cache or database."""
-        # Check cache first
-        prediction = self._active_predictions.get(prediction_id)
-        if prediction:
-            return prediction
-
-        # Fall back to database
-        result = await self.session.execute(
-            select(Prediction).where(Prediction.id == prediction_id)
-        )
-        return result.scalar_one_or_none()
+        """Get a prediction by ID."""
+        async with self.session_factory() as session:
+            stmt = (
+                select(Prediction)
+                .where(Prediction.id == prediction_id)
+                .options(selectinload(Prediction.bets))
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
 
     async def get_active_predictions(
         self,
         category: Optional[str] = None
     ) -> List[Prediction]:
         """Get all active predictions, optionally filtered by category."""
-        query = select(Prediction).where(
-            Prediction.resolved == False,
-            Prediction.end_time > datetime.utcnow()
-        )
-        
-        if category:
-            query = query.where(Prediction.category == category)
-            
-        result = await self.session.execute(query)
-        return result.scalars().all()
-
-    async def get_user_bets(
-        self,
-        user_id: str,
-        active_only: bool = False
-    ) -> List[PredictionBet]:
-        """Get all bets placed by a user."""
-        query = select(PredictionBet).where(PredictionBet.user_id == user_id)
-        
-        if active_only:
-            query = query.join(Prediction).where(
-                Prediction.resolved == False,
-                Prediction.end_time > datetime.utcnow()
+        async with self.session_factory() as session:
+            stmt = (
+                select(Prediction)
+                .where(Prediction.resolved == False)
+                .where(Prediction.end_time > datetime.utcnow())
+                .options(
+                    selectinload(Prediction.bets)  # Eagerly load bets relationship
+                )
             )
             
-        result = await self.session.execute(query)
-        return result.scalars().all() 
+            if category:
+                stmt = stmt.where(Prediction.category == category)
+            
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get_resolvable_predictions(
+        self,
+        creator_id: str
+    ) -> List[Prediction]:
+        """Get predictions that can be resolved by this user."""
+        async with self.session_factory() as session:
+            stmt = (
+                select(Prediction)
+                .where(Prediction.creator_id == creator_id)
+                .where(Prediction.resolved == False)
+                .where(Prediction.end_time <= datetime.utcnow())
+                .options(selectinload(Prediction.bets))
+            )
+            
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def place_bet(
+        self,
+        prediction_id: int,
+        user_id: str,
+        option: str,
+        amount: int,
+        economy: Literal["ffs", "hackathon"]
+    ) -> PredictionBet:
+        """Place a bet on a prediction."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                prediction = await self.get_prediction(prediction_id)
+                if not prediction:
+                    raise PredictionNotFoundError(prediction_id)
+
+                if prediction.end_time <= datetime.utcnow():
+                    raise BettingPeriodEndedError()
+
+                if option not in prediction.options:
+                    raise InvalidOptionError(option)
+
+                if amount <= 0:
+                    raise InvalidAmountError("Bet amount must be positive")
+
+                # Create bet record
+                bet = PredictionBet(
+                    prediction_id=prediction_id,
+                    user_id=user_id,
+                    option=option,
+                    amount=amount,
+                    source_economy=economy
+                )
+                
+                # Transfer points from user to prediction market
+                success = await self.transfer_service.transfer(
+                    from_id=user_id,
+                    to_id=None,  # Prediction Market house account
+                    amount=amount,
+                    economy=economy
+                )
+                
+                if not success:
+                    raise InsufficientPointsError(user_id, amount)
+
+                session.add(bet)
+                await session.flush()
+
+                # Track market balance
+                if economy not in self._market_balance[prediction_id]:
+                    self._market_balance[prediction_id][economy] = 0
+                self._market_balance[prediction_id][economy] += amount
+
+                return bet
+
+    async def resolve_prediction(
+        self,
+        prediction_id: int,
+        result: str,
+        resolver_id: str
+    ) -> Tuple[Prediction, List[Tuple[str, int, str]]]:
+        """Resolve a prediction and distribute payouts."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                prediction = await self.get_prediction(prediction_id)
+                if not prediction:
+                    raise PredictionNotFoundError(prediction_id)
+
+                if prediction.resolved:
+                    raise PredictionAlreadyResolvedError()
+
+                if prediction.creator_id != resolver_id:
+                    raise UnauthorizedResolutionError()
+
+                if result not in prediction.options:
+                    raise InvalidOptionError(result)
+
+                # Mark prediction as resolved
+                prediction.resolved = True
+                prediction.result = result
+
+                # Calculate and distribute payouts
+                payouts = []
+                total_pool = prediction.total_pool
+                winning_pool = prediction.get_option_total(result)
+
+                if winning_pool > 0:
+                    for bet in prediction.bets:
+                        if bet.option == result:
+                            payout = int((bet.amount / winning_pool) * total_pool)
+                            await self.transfer_service.transfer(
+                                from_id=None,  # Prediction Market house account
+                                to_id=bet.user_id,
+                                amount=payout,
+                                economy=bet.source_economy
+                            )
+                            payouts.append((bet.user_id, payout, bet.source_economy))
+
+                return prediction, payouts

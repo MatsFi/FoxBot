@@ -15,7 +15,7 @@ from services.prediction_market_service import PredictionMarketService
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from services.local_points_service import LocalPointsService
-
+from utils.logging import setup_logger
 
 class DiscordBot(commands.Bot):
     """Main bot class with core functionality."""
@@ -40,33 +40,9 @@ class DiscordBot(commands.Bot):
         self.database: Optional[Database] = None
         self.db_session = None  
              
-        # Set up logging
-        self.logger = logging.getLogger('discord_bot')
-        self.logger.setLevel(self.config.logging.level)
+        # Set up logging with both console and file output
+        self.logger = setup_logger('discord_bot', 'discord.log')
         
-        # Create logs directory
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
-        # File handler
-        file_handler = logging.FileHandler(
-            filename=log_dir / "discord.log",
-            encoding="utf-8",
-            mode="a"  # Append mode instead of write
-        )
-        file_handler.setFormatter(
-            logging.Formatter(self.config.logging.format)
-        )
-        
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(
-            logging.Formatter(self.config.logging.format)
-        )
-        
-        self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
-
         # Health check attributes
         self.last_heartbeat = None
         self.web_app = web.Application()
@@ -75,6 +51,14 @@ class DiscordBot(commands.Bot):
         self.start_timestamp = None
 
         self.prediction_market_service = None
+
+        # Define cog load order
+        self.cog_load_order = [
+            'cogs.local_economy',
+            'cogs.hackathon_economy',
+            'cogs.ffs_economy',
+            'cogs.prediction_market'
+        ]
 
     async def setup_hook(self):
         """Initialize bot systems."""
@@ -88,46 +72,33 @@ class DiscordBot(commands.Bot):
             self.database = Database(self.config.database.url)
             await self.database.create_all()
             
-            # Create engine and session
-            engine = create_async_engine(self.config.database.url)
-            async_session = sessionmaker(engine, class_=AsyncSession)
-            self.db_session = async_session()
+            # Get session factory
+            self.db_session = self.database.session
             
-            # Initialize points_service BEFORE prediction_market_service
+            # Initialize services
+            self.logger.info("Initializing services...")
             self.points_service = LocalPointsService(self.db_session)
-            
-            # Now initialize prediction_market_service
             self.prediction_market_service = PredictionMarketService(
                 self.db_session,
                 self.points_service,
-                self.config
+                self.config.prediction_market
             )
+            await self.prediction_market_service.start()
             
-            # Load cogs in specific order: local_economy must be first
+            # Load cogs in specified order
             self.logger.info("Loading cogs...")
-            await self.load_extension('cogs.local_economy')  # This sets up transfer_service         
-            await self.load_extension('cogs.hackathon_economy')
-            await self.load_extension('cogs.ffs_economy')
-            await self.load_extension('cogs.prediction_market')
-            
-            # Sync commands if guild_id is set
-            if self.config.guild_id:
-                guild = discord.Object(id=int(self.config.guild_id))
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-            else:
-                await self.tree.sync()
-            
-            # Start health check tasks if web server is enabled
-            if self.config.web.enabled:
-                self.heartbeat.start()
-                self.start_web_server.start()
-            
-            self.start_timestamp = discord.utils.utcnow()
-            self.logger.info("Bot initialized successfully")
+            for cog in self.cog_load_order:
+                try:
+                    await self.load_extension(cog)
+                    self.logger.info(f"Loaded cog: {cog}")
+                except Exception as e:
+                    self.logger.error(f"Error loading cog {cog}: {e}")
+                    raise
+
+            self.logger.info("Bot initialization complete")
             
         except Exception as e:
-            self.logger.error(f"Error during setup: {str(e)}")
+            self.logger.error(f"Error during setup: {e}")
             raise
 
     @tasks.loop()
@@ -204,56 +175,51 @@ class DiscordBot(commands.Bot):
         )
 
     async def close(self):
-        """Clean up before the bot closes."""
+        """Close the bot and cleanup resources."""
         try:
-            self.logger.info("Bot is shutting down...")
-            
-            # Stop tasks
-            if self.config.web.enabled:
-                self.heartbeat.cancel()
-                self.start_web_server.cancel()
-            
-            # Close database session first
-            if hasattr(self, 'db_session') and self.db_session:
+            self.logger.info("Starting bot shutdown sequence...")
+
+            # 1. Unload cogs first (they might need database access during cleanup)
+            self.logger.info("Unloading cogs...")
+            for cog in reversed(self.cog_load_order):
                 try:
-                    await self.db_session.close()
-                    self.logger.info("Database session closed")
+                    await self.unload_extension(cog)
+                    self.logger.info(f"Unloaded cog: {cog}")
                 except Exception as e:
-                    self.logger.error(f"Error closing database session: {e}")
-            
-            # Cleanup cogs
-            for extension in list(self.extensions.keys()):
-                try:
-                    await self.unload_extension(extension)
-                    self.logger.info(f"Unloaded extension {extension}")
-                except Exception as e:
-                    self.logger.error(f"Error unloading extension {extension}: {e}")
-            
-            # Close database connections
-            if hasattr(self, 'database') and self.database:
-                try:
-                    await self.database.close()
-                    self.logger.info("Database connections closed")
-                except Exception as e:
-                    self.logger.error(f"Error closing database: {e}")
-            
-            # Add null check before stopping prediction market service
-            if hasattr(self, 'prediction_market_service') and self.prediction_market_service:
+                    self.logger.error(f"Failed to unload cog {cog}: {e}")
+            self.logger.info("All cogs unloaded")
+
+            # 2. Stop services that depend on the database
+            if hasattr(self, 'prediction_market_service'):
+                self.logger.info("Stopping prediction market service...")
                 await self.prediction_market_service.stop()
+                self.logger.info("Prediction market service stopped")
+
+            # 3. Clean up database sessions
+            if hasattr(self, 'db_session'):
+                self.logger.info("Cleaning up database sessions...")
+                self.db_session = None
+                self.logger.info("Database sessions cleaned up")
+
+            # 4. Close database connection
+            if hasattr(self, 'database'):
+                self.logger.info("Closing database connection...")
+                await self.database.close()
+                self.logger.info("Database connection closed")
+
+            # 5. Finally, close Discord connection
+            self.logger.info("Closing Discord connection...")
+            await super().close()
+            self.logger.info("Discord connection closed")
             
-            # Call parent's close method
-            try:
-                await super().close()
-                self.logger.info("Discord connection closed")
-            except Exception as e:
-                self.logger.error(f"Error closing Discord connection: {e}")
+            self.logger.info("Shutdown complete")
             
         except Exception as e:
-            self.logger.error(f"Error during shutdown: {str(e)}")
+            self.logger.error(f"Error during shutdown: {e}")
             raise
 
 def main():
-    """Entry point for the bot."""
+    """Main entry point for the bot."""
     bot = DiscordBot()
     
     try:
@@ -262,7 +228,7 @@ def main():
         bot.logger.info("Received keyboard interrupt, shutting down...")
         asyncio.run(bot.close())
     except Exception as e:
-        bot.logger.error(f"Fatal error: {str(e)}")
+        bot.logger.error(f"Fatal error: {e}")
         raise
 
 if __name__ == "__main__":
