@@ -11,6 +11,11 @@ from discord.ext import commands, tasks
 from config.settings import load_config
 from database.database import Database
 from sqlalchemy import text
+from services.prediction_market_service import PredictionMarketService
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from services.local_points_service import LocalPointsService
+
 
 class DiscordBot(commands.Bot):
     """Main bot class with core functionality."""
@@ -31,9 +36,10 @@ class DiscordBot(commands.Bot):
             help_command=commands.DefaultHelpCommand()
         )
         
-        # Initialize as None - will be set up in setup_hook
+        # Initialize database and db_session as None - will be set up in setup_hook
         self.database: Optional[Database] = None
-        
+        self.db_session = None  
+             
         # Set up logging
         self.logger = logging.getLogger('discord_bot')
         self.logger.setLevel(self.config.logging.level)
@@ -80,11 +86,21 @@ class DiscordBot(commands.Bot):
             self.database = Database(self.config.database.url)
             await self.database.create_all()
             
+            # Make sure this happens BEFORE loading the prediction_market cog
+            engine = create_async_engine(self.config.database.url)
+            async_session = sessionmaker(engine, class_=AsyncSession)
+            self.db_session = async_session()
+            
             # Load cogs in specific order: local_economy must be first
             self.logger.info("Loading cogs...")
             await self.load_extension('cogs.local_economy')  # This sets up transfer_service
+            
+            # Initialize points_service before loading prediction_market
+            self.points_service = LocalPointsService(self.db_session)
+            
             await self.load_extension('cogs.hackathon_economy')
             await self.load_extension('cogs.ffs_economy')
+            await self.load_extension('cogs.prediction_market')
             
             # Sync commands if guild_id is set
             if self.config.guild_id:
@@ -204,6 +220,9 @@ class DiscordBot(commands.Bot):
                     self.logger.info("Database connections closed")
                 except Exception as e:
                     self.logger.error(f"Error closing database: {e}")
+            
+            # Cleanup prediction market service
+            await self.prediction_market_service.stop()
             
             # Call parent's close method
             try:

@@ -17,8 +17,20 @@ class PredictionMarket(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.service: PredictionMarketService = bot.prediction_market_service
+        self.service = PredictionMarketService(
+            bot.db_session,
+            bot.points_service,
+            bot.config.prediction_market
+        )
         self.permissions = PredictionMarketPermissions(bot)
+
+    async def cog_load(self):
+        """Called when the cog is loaded."""
+        await self.service.start()
+
+    async def cog_unload(self):
+        """Called when the cog is unloaded."""
+        await self.service.stop()
 
     @app_commands.guild_only()
     @app_commands.command(name="create_prediction", description="Create a new prediction market")
@@ -192,4 +204,7 @@ class PredictionMarket(commands.Cog):
             await interaction.followup.send(
                 "An error occurred while placing the bet.", 
                 ephemeral=True
-            ) 
+            )
+
+async def setup(bot):
+    await bot.add_cog(PredictionMarket(bot)) 
