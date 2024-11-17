@@ -152,33 +152,31 @@ class BaseMarketView(discord.ui.View):
                 ephemeral=True
             )
 
-class ResolutionView(discord.ui.View):
+class ResolutionView(BaseMarketView):
     def __init__(self, cog, predictions: List[Prediction]):
-        super().__init__(timeout=300)
-        self.cog = cog
+        super().__init__(cog)
         self.predictions = {str(p.id): p for p in predictions}
         self.selected_prediction: Optional[Prediction] = None
         self.selected_result: Optional[str] = None
         self.logger = logging.getLogger(__name__)
         
-        self.logger.info("Initializing ResolutionView")
         self.setup_view()
 
     def setup_view(self):
-        """Set up all view components."""
+        """Set up the resolution view."""
         # Prediction Select
         self.prediction_select = discord.ui.Select(
             placeholder="Select a prediction to resolve...",
             options=[
                 discord.SelectOption(
-                    label=f"ID {p_id} | {len(p.bets)} bets | {p.total_pool:,} points",
-                    description=f"Q: {p.question[:50]}..." if len(p.question) > 50 else f"Q: {p.question}",
-                    value=p_id
+                    label=p.question[:100] + "..." if len(p.question) > 100 else p.question,
+                    description=f"Pool: {p.total_pool:,} points | ID: {p_id}",
+                    value=p_id,
+                    emoji="🎯"
                 )
                 for p_id, p in self.predictions.items()
             ],
-            row=0,
-            custom_id="prediction_select"
+            row=0
         )
         self.prediction_select.callback = self.on_prediction_select
         self.add_item(self.prediction_select)
@@ -193,8 +191,7 @@ class ResolutionView(discord.ui.View):
                 )
             ],
             disabled=True,
-            row=1,
-            custom_id="result_select"
+            row=1
         )
         self.result_select.callback = self.on_result_select
         self.add_item(self.result_select)
@@ -205,10 +202,60 @@ class ResolutionView(discord.ui.View):
             style=discord.ButtonStyle.primary,
             disabled=True,
             row=2,
-            custom_id="resolve_button"
+            emoji="✅"
         )
         self.resolve_button.callback = self.on_resolve_click
         self.add_item(self.resolve_button)
+
+        # Initial embed
+        self.current_embed = discord.Embed(
+            title="🎯 Resolve Prediction",
+            description="Select a prediction to resolve from the dropdown menu below.",
+            color=discord.Color.blue()
+        )
+
+    def update_embed(self):
+        """Update embed with current selection state."""
+        embed = discord.Embed(
+            title="🎯 Resolve Prediction",
+            color=discord.Color.blue()
+        )
+        
+        if self.selected_prediction:
+            embed.add_field(
+                name="📋 Prediction",
+                value=self.selected_prediction.question,
+                inline=False
+            )
+            
+            # Show betting details
+            total_bets = len(self.selected_prediction.bets)
+            embed.add_field(
+                name="💰 Pool Details",
+                value=f"Total Bets: {total_bets}\nTotal Pool: {self.selected_prediction.total_pool:,} points",
+                inline=True
+            )
+            
+            # Show options and their current pools
+            options_text = []
+            for option in self.selected_prediction.options:
+                option_total = self.selected_prediction.get_option_total(option)
+                options_text.append(f"• {option}: {option_total:,} points")
+            
+            embed.add_field(
+                name="🎯 Options",
+                value="\n".join(options_text),
+                inline=False
+            )
+            
+            if self.selected_result:
+                embed.add_field(
+                    name="✅ Selected Result",
+                    value=self.selected_result,
+                    inline=True
+                )
+        
+        return embed
 
     async def on_prediction_select(self, interaction: discord.Interaction):
         """Handle prediction selection."""
@@ -323,57 +370,116 @@ class BettingView(BaseMarketView):
 
     def setup_view(self):
         """Initial view setup with prediction select."""
-        prediction_select = discord.ui.Select(
-            placeholder="Select a prediction...",
+        # Prediction Select
+        self.prediction_select = discord.ui.Select(
+            placeholder="Select a prediction to bet on...",
             options=[
                 discord.SelectOption(
-                    label=f"ID {p.id} | Pool: {p.total_pool:,}",
-                    description=f"Q: {p.question[:50]}...",
-                    value=str(p.id)
+                    label=p.question[:100] + "..." if len(p.question) > 100 else p.question,
+                    description=f"Pool: {p.total_pool:,} points | Ends <t:{int(p.end_time.timestamp())}:R>",
+                    value=str(p.id),
+                    emoji="🎯"
                 )
                 for p in self.predictions
             ],
             row=0
         )
-        prediction_select.callback = self.on_prediction_select
-        self.add_item(prediction_select)
+        self.prediction_select.callback = self.on_prediction_select
+        self.add_item(self.prediction_select)
+
+        # Option Select (initially disabled)
+        self.option_select = discord.ui.Select(
+            placeholder="First select a prediction...",
+            options=[
+                discord.SelectOption(
+                    label="Select prediction first",
+                    value="placeholder"
+                )
+            ],
+            disabled=True,
+            row=1
+        )
+        self.option_select.callback = self.on_option_select
+        self.add_item(self.option_select)
+
+        # Economy Select (initially disabled)
+        self.economy_select = discord.ui.Select(
+            placeholder="First select your prediction...",
+            options=[
+                discord.SelectOption(
+                    label="Select option first",
+                    value="placeholder"
+                )
+            ],
+            disabled=True,
+            row=2
+        )
+        self.economy_select.callback = self.on_economy_select
+        self.add_item(self.economy_select)
+
+        # Initial embed
+        self.current_embed = discord.Embed(
+            title="🎲 Place Your Bet",
+            description="Select a prediction from the dropdown menu below.",
+            color=discord.Color.blue()
+        )
 
     async def on_prediction_select(self, interaction: discord.Interaction):
         """Handle prediction selection."""
         try:
-            # Get selected prediction
             pred_id = int(interaction.data['values'][0])
             self.selected_prediction = next(p for p in self.predictions if p.id == pred_id)
             
-            # Clear current items
-            self.clear_items()
+            # Update prediction select to show selection
+            for option in self.prediction_select.options:
+                option.default = (option.value == str(pred_id))
             
-            # Add option select
-            option_select = discord.ui.Select(
-                placeholder="Select your prediction...",
-                options=[
-                    discord.SelectOption(label=option, value=option)
-                    for option in self.selected_prediction.options
-                ],
-                row=0
+            # Enable and update option select with context
+            self.option_select.disabled = False
+            self.option_select.placeholder = "What's your prediction?"
+            self.option_select.options = [
+                discord.SelectOption(
+                    label=option,
+                    description=f"Current Pool: {self.selected_prediction.get_option_total(option):,} points",
+                    value=option,
+                    emoji="🎯"
+                )
+                for option in self.selected_prediction.options
+            ]
+            
+            # Update message with new embed
+            embed = discord.Embed(
+                title="🎲 Place Your Bet",
+                description=self.selected_prediction.question,
+                color=discord.Color.blue()
             )
-            option_select.callback = self.on_option_select
-            self.add_item(option_select)
             
-            await interaction.response.edit_message(view=self)
+            end_time = f"<t:{int(self.selected_prediction.end_time.timestamp())}:R>"
+            embed.add_field(
+                name="💰 Current Pool",
+                value=f"{self.selected_prediction.total_pool:,} points",
+                inline=True
+            )
+            embed.add_field(
+                name="⏰ Ends",
+                value=end_time,
+                inline=True
+            )
+            
+            await interaction.response.edit_message(embed=embed, view=self)
             
         except Exception as e:
             self.logger.error(f"Error in prediction selection: {e}")
-            await interaction.response.send_message(
-                "An error occurred. Please try again.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
 
     async def on_option_select(self, interaction: discord.Interaction):
         """Handle option selection."""
         try:
             self.selected_option = interaction.data['values'][0]
-            self.clear_items()
+            
+            # Update option select to show selection
+            for option in self.option_select.options:
+                option.default = (option.value == self.selected_option)
             
             # Get available economies
             available_economies = self.cog.service.get_available_economies()
@@ -384,36 +490,48 @@ class BettingView(BaseMarketView):
                 )
                 return
             
-            # Add economy select
-            economy_select = discord.ui.Select(
-                placeholder="Select which points to bet with...",
-                options=[
-                    discord.SelectOption(
-                        label=f"{economy.upper()} Points",
-                        value=economy
-                    )
-                    for economy in available_economies
-                ],
-                row=0
-            )
-            economy_select.callback = self.on_economy_select
-            self.add_item(economy_select)
+            # Enable and update economy select
+            self.economy_select.disabled = False
+            self.economy_select.placeholder = "Select points to bet with..."
+            self.economy_select.options = [
+                discord.SelectOption(
+                    label=f"{economy.upper()} Points",
+                    description="Select to enter bet amount",
+                    value=economy,
+                    emoji="💎"
+                )
+                for economy in available_economies
+            ]
             
-            await interaction.response.edit_message(view=self)
+            # Update embed
+            embed = discord.Embed(
+                title="🎲 Place Your Bet",
+                description=self.selected_prediction.question,
+                color=discord.Color.blue()
+            )
+            embed.add_field(
+                name="✅ Your Selection",
+                value=self.selected_option,
+                inline=True
+            )
+            embed.add_field(
+                name="💰 Option Pool",
+                value=f"{self.selected_prediction.get_option_total(self.selected_option):,} points",
+                inline=True
+            )
+            
+            await interaction.response.edit_message(embed=embed, view=self)
             
         except Exception as e:
             self.logger.error(f"Error in option selection: {e}")
-            await interaction.response.send_message(
-                "An error occurred. Please try again.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
 
     async def on_economy_select(self, interaction: discord.Interaction):
         """Handle economy selection."""
         try:
             self.selected_economy = interaction.data['values'][0]
             
-            # Show amount modal
+            # Create and show modal
             modal = BetAmountModal(
                 self.cog,
                 self.selected_prediction,
@@ -424,10 +542,7 @@ class BettingView(BaseMarketView):
             
         except Exception as e:
             self.logger.error(f"Error in economy selection: {e}")
-            await interaction.response.send_message(
-                "An error occurred. Please try again.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("An error occurred. Please try again.", ephemeral=True)
 
 class PredictionsListView(BaseMarketView):
     """View for listing predictions."""
