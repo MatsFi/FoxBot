@@ -74,6 +74,8 @@ class DiscordBot(commands.Bot):
         self.web_app.router.add_get("/ping", self.ping)
         self.start_timestamp = None
 
+        self.prediction_market_service = None
+
     async def setup_hook(self):
         """Initialize bot systems."""
         try:
@@ -86,18 +88,24 @@ class DiscordBot(commands.Bot):
             self.database = Database(self.config.database.url)
             await self.database.create_all()
             
-            # Make sure this happens BEFORE loading the prediction_market cog
+            # Create engine and session
             engine = create_async_engine(self.config.database.url)
             async_session = sessionmaker(engine, class_=AsyncSession)
             self.db_session = async_session()
             
-            # Load cogs in specific order: local_economy must be first
-            self.logger.info("Loading cogs...")
-            await self.load_extension('cogs.local_economy')  # This sets up transfer_service
-            
-            # Initialize points_service before loading prediction_market
+            # Initialize points_service BEFORE prediction_market_service
             self.points_service = LocalPointsService(self.db_session)
             
+            # Now initialize prediction_market_service
+            self.prediction_market_service = PredictionMarketService(
+                self.db_session,
+                self.points_service,
+                self.config
+            )
+            
+            # Load cogs in specific order: local_economy must be first
+            self.logger.info("Loading cogs...")
+            await self.load_extension('cogs.local_economy')  # This sets up transfer_service         
             await self.load_extension('cogs.hackathon_economy')
             await self.load_extension('cogs.ffs_economy')
             await self.load_extension('cogs.prediction_market')
@@ -205,6 +213,14 @@ class DiscordBot(commands.Bot):
                 self.heartbeat.cancel()
                 self.start_web_server.cancel()
             
+            # Close database session first
+            if hasattr(self, 'db_session') and self.db_session:
+                try:
+                    await self.db_session.close()
+                    self.logger.info("Database session closed")
+                except Exception as e:
+                    self.logger.error(f"Error closing database session: {e}")
+            
             # Cleanup cogs
             for extension in list(self.extensions.keys()):
                 try:
@@ -221,8 +237,9 @@ class DiscordBot(commands.Bot):
                 except Exception as e:
                     self.logger.error(f"Error closing database: {e}")
             
-            # Cleanup prediction market service
-            await self.prediction_market_service.stop()
+            # Add null check before stopping prediction market service
+            if hasattr(self, 'prediction_market_service') and self.prediction_market_service:
+                await self.prediction_market_service.stop()
             
             # Call parent's close method
             try:
