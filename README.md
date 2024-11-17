@@ -1,74 +1,146 @@
-# Name: PM (Prediction Market)
+# FoxBot Discord Bot
+
+A Discord bot featuring a prediction market system using cross-economy points.
+
+## Prediction Market System
+
+The prediction market allows users to create predictions, place bets, and earn points based on correct predictions.
+
+### User Commands
+
+#### Creating Predictions
+```
+/create_prediction question:"Who will win?" options:"Team A,Team B" end_time:"2h"
+```
+- `question`: The prediction question (required)
+- `options`: Comma-separated list of possible outcomes (required)
+- `end_time`: When the prediction ends (e.g., "2h", "1d", "30m") (required)
+- `category`: Optional category for the prediction
+
+#### Viewing Predictions
+```
+/predictions [show_all:True/False]
+```
+- Shows active predictions by default
+- Use `show_all:True` to see resolved predictions too
+- Displays:
+  - Prediction questions
+  - Current pool sizes
+  - Time remaining
+  - Available options
+
+#### Placing Bets
+```
+/bet
+```
+Interactive command that guides you through:
+1. Selecting a prediction
+2. Choosing your predicted outcome
+3. Selecting point type (local/external economies)
+4. Entering bet amount
+
+#### Resolving Predictions
+```
+/resolve
+```
+For prediction creators only:
+1. Select your prediction to resolve
+2. Choose the winning option
+3. Confirm to process payouts
+
+#### Refunding Predictions
+```
+/refund
+```
+For prediction creators only:
+- Refunds all bets for a prediction
+- Useful for cancelled events or errors
+
+### Point System
+
+- Users can bet points from different economies
+- Winning bets earn proportional shares of the total pool
+- Payouts are automatically processed on resolution
+- Points are returned for refunded predictions
+
+### Examples
+
+1. Creating a prediction:
+```
+/create_prediction question:"Will it rain tomorrow?" options:"Yes,No" end_time:"24h"
+```
+
+2. Viewing active predictions:
+```
+/predictions
+```
+
+3. Placing a bet:
+```
+/bet
+[Select prediction from dropdown]
+[Select your prediction]
+[Choose point type]
+[Enter amount]
+```
+
+4. Resolving a prediction:
+```
+/resolve
+[Select prediction]
+[Choose winning option]
+[Confirm]
+```
 
 ## Project Structure
 
 ```
-discord_bot/
+FoxBot/
 ├── cogs/
-│   ├── __init__.py                 # Cog package initialization
-│   ├── economy_cog_template.py     # Base class for economy cogs
-│   ├── local_economy.py            # Local Economy commands
-│   ├── ffs_economy.py              # FFS Economy commands
-│   ├── hackathon_economy.py        # Hackathon Economy commands
-│   └── prediction_market.py        # Prediction Market commands
-│
-├── config/
-│   ├── __init__.py
-│   └── settings.py                 # Configuration management
-│
+│   └── prediction_market.py      # Main prediction market commands
 ├── database/
-│   ├── __init__.py
-│   ├── models.py                   # SQLAlchemy models
-│   └── database.py                 # Database connection handling
-│
+│   ├── models.py                # Database models
+│   └── database.py              # Database connection handling
 ├── services/
-│   ├── __init__.py                     # Services package initialization
-│   ├── external_service_adapters.py    # External economy adapters
-│   ├── ffs_points_service.py           # FFS economy service
-│   ├── hackathon_points_service.py     # Hackathon economy service
-│   ├── local_points_service.py         # Local economy service
-│   ├── prediction_market_service.py    # Prediction Market service
-│   ├── transfer_interface.py           # Interface definitions
-│   └── transfer_service.py             # Cross-economy transfer logic
-│
+│   ├── prediction_market_service.py  # Business logic
+│   └── points_service.py        # Points management
 ├── utils/
-│   ├── __init__.py
-│   ├── decorators.py               # Custom decorators
-│   └── exceptions.py               # Custom exceptions
-│
-├── __init__.py                     # Root package initialization
-├── bot.py                          # Main bot file
-└── requirements.txt                # Project dependencies
+│   └── time_parser.py           # Time parsing utilities
+└── main.py                      # Bot initialization
 ```
 
-## Design Principles
+### Key Components
 
-## Core Components
+- **Prediction Market Cog**: Handles Discord commands and UI
+- **Database Models**: Defines prediction and bet data structures
+- **Services**: Manages business logic and data operations
+- **Utils**: Helper functions and utilities
 
-### Services Layer
+## Setup
 
-### Cogs Layer
-
-## Setup Order
-
-1. Local Economy must be loaded first to initialize the transfer service
-2. External economies can be loaded in any order thereafter
-3. Each external economy registers with the transfer service on load
-4. Load additional games which interact with an economy thereafter
-
-## Deployment
-
-```bash
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your configuration
-
-# Install dependencies
+1. Clone the repository
+2. Install dependencies:
+```
 pip install -r requirements.txt
-
-# Run the bot
-python bot.py
 ```
+3. Set up environment variables:
+```
+DISCORD_TOKEN=your_bot_token
+DATABASE_URL=your_database_url
+```
+4. Run the bot:
+```
+python main.py
+```
+
+## Permissions Required
+
+The bot needs these Discord permissions:
+- Send Messages
+- Embed Links
+- Add Reactions
+- Use External Emojis
+- Use Slash Commands
 
 ## Contributing
 
@@ -80,5 +152,4 @@ python bot.py
 
 ## License
 
-MIT
-
+[Your License Here]
