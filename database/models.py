@@ -1,8 +1,8 @@
 """SQLAlchemy models for the database."""
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 from sqlalchemy import Column, Integer, Boolean, String, Text, DateTime, ForeignKey, JSON
-from sqlalchemy.orm import relationship, Mapped
+from sqlalchemy.orm import relationship, Mapped, mapped_column
 from .database import Base
 
 def update_timestamp(mapper, connection, target):
@@ -38,16 +38,20 @@ class Prediction(Base):
     """Model for prediction markets."""
     __tablename__ = 'predictions'
 
-    id: Mapped[int] = Column(Integer, primary_key=True)
-    question: Mapped[str] = Column(String, nullable=False)
-    options: Mapped[List[str]] = Column(JSON, nullable=False)
-    creator_id: Mapped[str] = Column(String, nullable=False)
-    category: Mapped[str] = Column(String, nullable=True)
-    created_at: Mapped[datetime] = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    end_time: Mapped[datetime] = Column(DateTime(timezone=True), nullable=False)
-    resolved: Mapped[bool] = Column(Boolean, default=False)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    question: Mapped[str]
+    options: Mapped[List[str]] = mapped_column(JSON)
+    creator_id: Mapped[str]
+    channel_id: Mapped[str]
+    end_time: Mapped[datetime]
+    resolved: Mapped[bool] = mapped_column(default=False)
+    result: Mapped[Optional[str]] = mapped_column(default=None)
+    category: Mapped[Optional[str]] = mapped_column(default=None)
+    created_at: Mapped[datetime] = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc)
+    )
     refunded: Mapped[bool] = Column(Boolean, default=False)
-    result: Mapped[str] = Column(String, nullable=True)
     
     # Relationship to bets
     bets: Mapped[List["PredictionBet"]] = relationship("PredictionBet", back_populates="prediction", cascade="all, delete-orphan")

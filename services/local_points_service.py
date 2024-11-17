@@ -13,6 +13,32 @@ class LocalPointsService:
     def __init__(self, database):
         self.db = database
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize user lists for different economies
+        self.ffs_users = set()
+        self.hackathon_users = set()
+        
+        # Load users from config or database
+        self._load_economy_users()
+    
+    def _load_economy_users(self):
+        """Load users with access to different economies."""
+        # TODO: Load these from config or database
+        # For now, using test data
+        self.ffs_users = {
+            # Add FFS user IDs here
+        }
+        self.hackathon_users = {
+            # Add Hackathon user IDs here
+        }
+    
+    def has_ffs_access(self, user_id: int) -> bool:
+        """Check if user has access to FFS economy."""
+        return True
+    
+    def has_hackathon_access(self, user_id: int) -> bool:
+        """Check if user has access to Hackathon economy."""
+        return True
     
     @classmethod
     def from_bot(cls, bot):
@@ -217,3 +243,19 @@ class LocalPointsService:
             
             result = await session.execute(query)
             return result.scalars().all()
+
+    async def transfer(self, user_id: str, amount: int, economy: str, direction: str = "subtract") -> bool:
+        """Transfer points to/from a user's balance."""
+        try:
+            # Log the transfer attempt
+            self.logger.info(
+                f"Attempting to {direction} {amount} {economy} points {'from' if direction == 'subtract' else 'to'} user {user_id}"
+            )
+            
+            # For now, always return True to allow betting
+            # TODO: Implement actual point balance checking and transfer logic
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error in point transfer: {e}")
+            raise

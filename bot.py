@@ -55,8 +55,8 @@ class DiscordBot(commands.Bot):
         # Define cog load order
         self.cog_load_order = [
             'cogs.local_economy',
-            'cogs.hackathon_economy',
             'cogs.ffs_economy',
+            'cogs.hackathon_economy',
             'cogs.prediction_market'
         ]
 
@@ -75,28 +75,36 @@ class DiscordBot(commands.Bot):
             # Get session factory
             self.db_session = self.database.session
             
-            # Initialize services
-            self.logger.info("Initializing services...")
+            # Initialize local points service first
+            self.logger.info("Initializing local points service...")
             self.points_service = LocalPointsService(self.db_session)
+            
+            # Initialize prediction market service
+            self.logger.info("Initializing prediction market service...")
             self.prediction_market_service = PredictionMarketService(
-                self.db_session,
-                self.points_service,
-                self.config.prediction_market
+                session_factory=self.db_session,
+                bot=self,
+                points_service=self.points_service
             )
             await self.prediction_market_service.start()
             
             # Load cogs in specified order
-            self.logger.info("Loading cogs...")
-            for cog in self.cog_load_order:
+            self.logger.info("Loading cogs in order...")
+            for cog_name in self.cog_load_order:
                 try:
-                    await self.load_extension(cog)
-                    self.logger.info(f"Loaded cog: {cog}")
+                    await self.load_extension(cog_name)
+                    self.logger.info(f"Loaded {cog_name}")
                 except Exception as e:
-                    self.logger.error(f"Error loading cog {cog}: {e}")
+                    self.logger.error(f"Failed to load {cog_name}: {e}")
                     raise
-
-            self.logger.info("Bot initialization complete")
             
+            # Debug: Log available economies
+            if hasattr(self, 'transfer_service'):
+                economies = list(self.transfer_service._external_services.keys())
+                self.logger.info(f"Available external economies after setup: {economies}")
+            else:
+                self.logger.warning("Transfer service not initialized!")
+
         except Exception as e:
             self.logger.error(f"Error during setup: {e}")
             raise
