@@ -97,15 +97,13 @@ For prediction creators only:
 ```
 FoxBot/
 ├── cogs/
-│   └── prediction_market.py      # Main prediction market commands
+│   └── prediction_market.py     # Main prediction market commands
 ├── database/
 │   ├── models.py                # Database models
 │   └── database.py              # Database connection handling
 ├── services/
 │   ├── prediction_market_service.py  # Business logic
 │   └── points_service.py        # Points management
-├── utils/
-│   └── time_parser.py           # Time parsing utilities
 └── main.py                      # Bot initialization
 ```
 

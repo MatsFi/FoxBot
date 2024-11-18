@@ -21,68 +21,104 @@ import math
 # - Betting timeframe restrictions
 # - Economy-specific limits
 
-class BetAmountModal(discord.ui.Modal, title="Place Your Bet"):
-    def __init__(self, cog, prediction: Prediction, option: str, economy: str):
-        super().__init__()
-        self.cog = cog
-        self.prediction = prediction
-        self.selected_option = option
-        self.economy = economy
-        self.logger = logging.getLogger(__name__)
+class BetModal(discord.ui.Modal, title="Place Your Bet"):
+    def __init__(
+        self,
+        predictions: list[tuple[str, str]],  # List of (id, title)
+        options: list[str],
+        economies: list[str],
+        *args,
+        **kwargs
+    ):
+        super().__init__(*args, **kwargs)
         
-        # Update min/max bet limits
-        self.min_bet = 1
-        self.max_bet = 500
+        # Prediction selector
+        self.prediction_select = discord.ui.Select(
+            custom_id="prediction_select",
+            placeholder="Select prediction",
+            options=[
+                discord.SelectOption(label=title, value=id) 
+                for id, title in predictions
+            ]
+        )
+        self.add_item(self.prediction_select)
         
+        # Option selector
+        self.option_select = discord.ui.Select(
+            custom_id="option_select",
+            placeholder="Select option",
+            options=[discord.SelectOption(label=opt) for opt in options]
+        )
+        self.add_item(self.option_select)
+
+        # Amount input
         self.amount = discord.ui.TextInput(
-            label="Bet Amount",
-            placeholder=f"Enter amount between {self.min_bet:,} and {self.max_bet:,}",
+            label="Amount",
+            placeholder="Enter bet amount",
             min_length=1,
             max_length=10,
             required=True
         )
         self.add_item(self.amount)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        """Handle the modal submission."""
+        # Only add economy selector if multiple economies exist
+        if len(economies) > 1:
+            self.economy_select = discord.ui.Select(
+                custom_id="economy_select",
+                placeholder="Select economy",
+                options=[discord.SelectOption(label=e) for e in economies]
+            )
+            self.add_item(self.economy_select)
+        else:
+            # Store the single economy if only one exists
+            self.single_economy = economies[0] if economies else None
+
+    async def callback(self, interaction: discord.Interaction):
         try:
-            # Validate amount
+            prediction_id = self.prediction_select.values[0]
+            selected_option = self.option_select.values[0]
             amount = int(self.amount.value)
-            if amount < self.min_bet or amount > self.max_bet:
-                raise ValueError(
-                    f"Bet amount must be between {self.min_bet:,} and {self.max_bet:,}"
+            
+            # Get economy selection or use default
+            economy = (self.economy_select.values[0] 
+                      if len(self.children) > 3 
+                      else self.single_economy)
+            
+            if not economy:
+                await interaction.response.send_message(
+                    "No external economies available for betting.",
+                    ephemeral=True
+                )
+                return
+
+            # Place bet using prediction market service
+            success = await interaction.client.prediction_market_service.place_bet(
+                prediction_id=prediction_id,
+                user_id=interaction.user.id,
+                option=selected_option,
+                amount=amount,
+                economy=economy
+            )
+
+            if success:
+                await interaction.response.send_message(
+                    f"Bet placed successfully! You bet {amount} {economy} tokens on {selected_option}",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "Failed to place bet. Please check your balance and try again.",
+                    ephemeral=True
                 )
 
-            # Place the bet
-            await self.cog.service.place_bet(
-                prediction_id=self.prediction.id,
-                user_id=str(interaction.user.id),
-                option=self.selected_option,
-                amount=amount,
-                economy=self.economy
-            )
-            
+        except ValueError:
             await interaction.response.send_message(
-                f"✅ Successfully placed bet of {amount:,} {self.economy.upper()} points "
-                f"on '{self.selected_option}' for prediction:\n"
-                f"'{self.prediction.question}'",
-                ephemeral=True
-            )
-            
-        except ValueError as e:
-            await interaction.response.send_message(
-                f"❌ Invalid bet amount: {str(e)}",
-                ephemeral=True
-            )
-        except InsufficientPointsError:
-            await interaction.response.send_message(
-                "❌ You don't have enough points for this bet!",
+                "Please enter a valid number for the bet amount.",
                 ephemeral=True
             )
         except Exception as e:
-            self.logger.error(f"Error placing bet: {e}")
             await interaction.response.send_message(
-                "❌ An error occurred while placing your bet.",
+                f"An error occurred: {str(e)}",
                 ephemeral=True
             )
 
@@ -370,7 +406,7 @@ class BettingView(BaseMarketView):
 
     def setup_view(self):
         """Initial view setup with prediction select."""
-        # Prediction Select
+        # 1. Prediction Select (First)
         self.prediction_select = discord.ui.Select(
             placeholder="Select a prediction to bet on...",
             options=[
@@ -387,35 +423,32 @@ class BettingView(BaseMarketView):
         self.prediction_select.callback = self.on_prediction_select
         self.add_item(self.prediction_select)
 
-        # Option Select (initially disabled)
+        # 2. Option Select (Initially disabled)
         self.option_select = discord.ui.Select(
             placeholder="First select a prediction...",
-            options=[
-                discord.SelectOption(
-                    label="Select prediction first",
-                    value="placeholder"
-                )
-            ],
+            options=[discord.SelectOption(label="Select prediction first", value="placeholder")],
             disabled=True,
             row=1
         )
         self.option_select.callback = self.on_option_select
         self.add_item(self.option_select)
 
-        # Economy Select (initially disabled)
-        self.economy_select = discord.ui.Select(
-            placeholder="First select your prediction...",
-            options=[
-                discord.SelectOption(
-                    label="Select option first",
-                    value="placeholder"
-                )
-            ],
-            disabled=True,
-            row=2
-        )
-        self.economy_select.callback = self.on_economy_select
-        self.add_item(self.economy_select)
+        # Get external economies once
+        external_economies = list(self.cog.bot.transfer_service._external_services.keys())
+        
+        # Only create economy select if multiple economies exist
+        if len(external_economies) > 1:
+            self.economy_select = discord.ui.Select(
+                placeholder="First select your prediction...",
+                options=[discord.SelectOption(label="Select option first", value="placeholder")],
+                disabled=True,
+                row=2
+            )
+            self.economy_select.callback = self.on_economy_select
+            self.add_item(self.economy_select)
+        else:
+            # Store the single economy
+            self.selected_economy = external_economies[0]
 
         # Initial embed
         self.current_embed = discord.Embed(
@@ -477,50 +510,17 @@ class BettingView(BaseMarketView):
         try:
             self.selected_option = interaction.data['values'][0]
             
-            # Update option select to show selection
-            for option in self.option_select.options:
-                option.default = (option.value == self.selected_option)
-            
             # Get available economies
-            available_economies = self.cog.service.get_available_economies()
-            if not available_economies:
-                await interaction.response.send_message(
-                    "❌ No external economies are available for betting.",
-                    ephemeral=True
-                )
-                return
+            external_economies = list(self.cog.bot.transfer_service._external_services.keys())
             
-            # Enable and update economy select
-            self.economy_select.disabled = False
-            self.economy_select.placeholder = "Select points to bet with..."
-            self.economy_select.options = [
-                discord.SelectOption(
-                    label=f"{economy.upper()} Points",
-                    description="Select to enter bet amount",
-                    value=economy,
-                    emoji="💎"
-                )
-                for economy in available_economies
-            ]
-            
-            # Update embed
-            embed = discord.Embed(
-                title="🎲 Place Your Bet",
-                description=self.selected_prediction.question,
-                color=discord.Color.blue()
+            # Create modal with available economies
+            modal = BetAmountModal(
+                self.cog,
+                self.selected_prediction,
+                self.selected_option,
+                available_economies=external_economies
             )
-            embed.add_field(
-                name="✅ Your Selection",
-                value=self.selected_option,
-                inline=True
-            )
-            embed.add_field(
-                name="💰 Option Pool",
-                value=f"{self.selected_prediction.get_option_total(self.selected_option):,} points",
-                inline=True
-            )
-            
-            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.response.send_modal(modal)
             
         except Exception as e:
             self.logger.error(f"Error in option selection: {e}")
@@ -755,31 +755,42 @@ class PredictionMarket(commands.Cog):
         await self.service.stop()
 
     @app_commands.guild_only()
-    @app_commands.command(name="bet", description="Place a bet on a prediction")
+    @app_commands.command()
     async def bet(self, interaction: discord.Interaction):
-        """Place a bet on a prediction."""
-        await interaction.response.defer(ephemeral=True)
-        
+        """Place a bet on an active prediction"""
         try:
-            predictions = await self.service.get_active_predictions()
-            if not predictions:
-                await interaction.followup.send(
-                    "No active predictions at the moment.",
+            # Get available external economies
+            external_economies = list(self.bot.transfer_service._external_services.keys())
+            
+            if not external_economies:
+                await interaction.response.send_message(
+                    "No external economies are currently available for betting.",
                     ephemeral=True
                 )
                 return
 
-            view = BettingView(self, predictions)
-            await interaction.followup.send(
-                "Select a prediction to bet on:",
+            # Get active predictions
+            active_predictions = await self.bot.prediction_market_service.get_active_predictions()
+            
+            if not active_predictions:
+                await interaction.response.send_message(
+                    "No active predictions available.",
+                    ephemeral=True
+                )
+                return
+
+            # Show BettingView
+            view = BettingView(self, active_predictions)
+            await interaction.response.send_message(
+                "🎲 Place Your Bet",
                 view=view,
                 ephemeral=True
             )
 
         except Exception as e:
             self.logger.error(f"Error in bet command: {e}")
-            await interaction.followup.send(
-                "An error occurred while processing your bet.",
+            await interaction.response.send_message(
+                f"An error occurred: {str(e)}",
                 ephemeral=True
             )
 
@@ -995,6 +1006,101 @@ class PredictionMarket(commands.Cog):
             await interaction.response.send_message(
                 "❌ Something went wrong while checking your resolvable predictions. "
                 "Please try again later or contact an administrator if the problem persists.",
+                ephemeral=True
+            )
+
+class BetAmountModal(discord.ui.Modal, title="Enter Bet Amount"):
+    def __init__(
+        self,
+        cog,
+        prediction: Prediction,
+        selected_option: str,
+        available_economies: list[str]
+    ):
+        super().__init__()
+        self.cog = cog
+        self.prediction = prediction
+        self.selected_option = selected_option
+        
+        # Determine economy handling
+        self.single_economy = available_economies[0] if len(available_economies) == 1 else None
+        self.multiple_economies = len(available_economies) > 1
+
+        # Amount input - label changes based on economy context
+        amount_label = (
+            f"Amount ({self.single_economy} points)" 
+            if self.single_economy 
+            else "Amount"
+        )
+        self.amount = discord.ui.TextInput(
+            label=amount_label,
+            placeholder="Enter bet amount",
+            min_length=1,
+            max_length=10,
+            required=True
+        )
+        self.add_item(self.amount)
+
+        # Only add economy selector if multiple economies exist
+        if self.multiple_economies:
+            self.economy = discord.ui.Select(
+                placeholder="Select economy",
+                options=[
+                    discord.SelectOption(
+                        label=f"{economy.upper()} Points",
+                        value=economy,
+                        emoji="💎"
+                    )
+                    for economy in available_economies
+                ]
+            )
+            self.add_item(self.economy)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(self.amount.value)
+            
+            # Get economy based on UI state
+            economy = (
+                self.single_economy if self.single_economy 
+                else self.economy.values[0] if self.multiple_economies
+                else None
+            )
+            
+            if not economy:
+                await interaction.response.send_message(
+                    "❌ No economy selected or available.",
+                    ephemeral=True
+                )
+                return
+
+            success = await self.cog.service.place_bet(
+                prediction_id=self.prediction.id,
+                user_id=str(interaction.user.id),
+                option=self.selected_option,
+                amount=amount,
+                economy=economy
+            )
+
+            if success:
+                await interaction.response.send_message(
+                    f"✅ Bet placed successfully! You bet {amount:,} {economy} points on {self.selected_option}",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Failed to place bet. Please check your balance and try again.",
+                    ephemeral=True
+                )
+
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Please enter a valid number for the bet amount.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ An error occurred: {str(e)}",
                 ephemeral=True
             )
 

@@ -55,7 +55,7 @@ class DiscordBot(commands.Bot):
         # Define cog load order
         self.cog_load_order = [
             'cogs.local_economy',
-            'cogs.ffs_economy',
+#            'cogs.ffs_economy',
             'cogs.hackathon_economy',
             'cogs.prediction_market'
         ]
