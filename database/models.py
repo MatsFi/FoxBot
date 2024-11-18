@@ -47,7 +47,7 @@ class Prediction(Base):
     category: Mapped[Optional[str]]
     creator_id: Mapped[int]  # Discord user ID
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
-    end_time: Mapped[datetime]  # When betting period ends
+    end_time: Mapped[datetime]
     resolved: Mapped[bool] = mapped_column(default=False)
     refunded: Mapped[bool] = mapped_column(default=False)
     result: Mapped[Optional[str]]  # Winning option text

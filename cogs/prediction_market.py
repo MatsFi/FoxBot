@@ -19,22 +19,88 @@ class PredictionMarket(commands.Cog):
         self.logger = logging.getLogger(__name__)
         self.active_views = {}
 
-    async def cleanup_old_views(self):
-        """Remove views for resolved or expired predictions."""
-        for prediction_id in list(self.active_views.keys()):
-            prediction = await self.service.get_prediction(prediction_id)
-            if (prediction.resolved or 
-                prediction.end_time <= datetime.now(timezone.utc)):
-                del self.active_views[prediction_id]
+    @app_commands.guild_only()
+    @app_commands.command(name="list_predictions", description="List all predictions")
+    async def list_predictions(self, interaction: discord.Interaction):
+        self.logger.debug("Starting list_predictions command")
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            self.logger.debug("Calling service.get_all_predictions()")
+            predictions = await self.service.get_all_predictions()
+            self.logger.debug(f"Retrieved {len(predictions) if predictions else 0} predictions")
 
+            if not predictions:
+                self.logger.debug("No predictions found, sending response")
+                await interaction.followup.send(
+                    "No predictions found.",
+                    ephemeral=True
+                )
+                return
+
+            self.logger.debug("Creating embed pages")
+            pages = []
+            for i, prediction in enumerate(predictions):
+                self.logger.debug(f"Processing prediction {i+1}/{len(predictions)}")
+                embed = discord.Embed(
+                    title="🎲 Prediction Market",
+                    description=prediction['question'],
+                    color=discord.Color.blue(),
+                    timestamp=prediction['created_at']
+                )
+                
+                self.logger.debug(f"Getting prices for prediction {prediction['id']}")
+                prices = await self.service.get_current_prices(prediction['id'])
+                
+                # Status field
+                status = "🟢 Active" if not prediction['resolved'] else "✅ Resolved"
+                if prediction['refunded']:
+                    status = "💰 Refunded"
+                embed.add_field(name="Status", value=status, inline=True)
+                
+                # Time fields
+                embed.add_field(
+                    name="Ends",
+                    value=discord.utils.format_dt(prediction['end_time'], 'R'),
+                    inline=True
+                )
+                
+                # Options and odds
+                options_text = ""
+                for option_text, price_info in prices.items():
+                    prob = (1 / price_info['price_per_share']) * 100 if price_info['price_per_share'] > 0 else 0
+                    options_text += f"\n{option_text}: {prob:.1f}%"
+                embed.add_field(name="Options", value=options_text, inline=False)
+                
+                # Volume
+                embed.add_field(
+                    name="Total Volume",
+                    value=f"{prediction['total_bets']:,} points",
+                    inline=True
+                )
+                
+                if prediction['category']:
+                    embed.add_field(name="Category", value=prediction['category'], inline=True)
+                
+                self.logger.debug(f"Fetching creator user for prediction {prediction['id']}")
+                creator = await self.bot.fetch_user(prediction['creator_id'])
+                embed.set_footer(text=f"Created by {creator.display_name}")
+                
+                pages.append(embed)
+
+            self.logger.debug("Creating and starting paginated view")
+            view = PaginatedPredictionView(pages)
+            await view.start(interaction)
+
+        except Exception as e:
+            self.logger.error(f"Error listing predictions: {e}", exc_info=True)
+            await interaction.followup.send(
+                "An error occurred while listing predictions.",
+                ephemeral=True
+            )
+    
     @app_commands.guild_only()
     @app_commands.command(name="create_prediction", description="Create a new prediction market")
-    @app_commands.describe(
-        question="The question for the prediction",
-        options="Comma-separated list of prediction options",
-        duration="Duration format: days,hours,minutes (e.g., 1,2,30 or ,,30 or 1,,)",
-        category="Category for the prediction (optional)"
-    )
     async def create_prediction(
         self, 
         interaction: discord.Interaction, 
@@ -126,21 +192,34 @@ class PredictionMarket(commands.Cog):
     @app_commands.guild_only()
     @app_commands.command(name="bet", description="Place a bet on a prediction")
     async def bet(self, interaction: discord.Interaction):
+        self.logger.debug("Starting bet command")
         await interaction.response.defer(ephemeral=True)
 
-        # Get active predictions
-        active_predictions = await self.service.get_active_predictions()
-        if not active_predictions:
-            await interaction.followup.send("No active predictions at the moment.", ephemeral=True)
-            return
+        try:
+            self.logger.debug("Fetching active predictions")
+            active_predictions = await self.service.get_active_predictions()
+            self.logger.debug(f"Found {len(active_predictions) if active_predictions else 0} active predictions")
 
-        # Create prediction selection view
-        view = PredictionSelectView(active_predictions, self)
-        await interaction.followup.send(
-            "Select a prediction to bet on:", 
-            view=view, 
-            ephemeral=True
-        )
+            if not active_predictions:
+                self.logger.debug("No active predictions found")
+                await interaction.followup.send("No active predictions at the moment.", ephemeral=True)
+                return
+
+            self.logger.debug("Creating prediction selection view")
+            view = PredictionSelectView(active_predictions, self)
+            self.logger.debug("Sending selection view to user")
+            await interaction.followup.send(
+                "Select a prediction to bet on:", 
+                view=view, 
+                ephemeral=True
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in bet command: {e}", exc_info=True)
+            await interaction.followup.send(
+                "An error occurred while processing the bet command.",
+                ephemeral=True
+            )
 
     @app_commands.guild_only()
     @app_commands.command(name="resolve_prediction", description="Resolve a prediction")
@@ -166,41 +245,74 @@ class PredictionMarket(commands.Cog):
             ephemeral=True
         )
 
+
+
+    async def cleanup_old_views(self):
+        """Remove views for resolved or expired predictions."""
+        for prediction_id in list(self.active_views.keys()):
+            prediction = await self.service.get_prediction(prediction_id)
+            if (prediction.resolved or 
+                prediction.end_time <= datetime.now(timezone.utc)):
+                del self.active_views[prediction_id]
+
 class PredictionSelectView(discord.ui.View):
     def __init__(self, predictions, cog):
         super().__init__()
+        self.logger = logging.getLogger(__name__)
+        self.logger.debug("Initializing PredictionSelectView")
         self.add_item(PredictionSelect(predictions, cog))
 
 class PredictionSelect(discord.ui.Select):
     def __init__(self, predictions, cog):
+        self.logger = logging.getLogger(__name__)
+        self.logger.debug("Initializing PredictionSelect")
         self.cog = cog
-        options = [
-            discord.SelectOption(
-                label=pred.question[:100],  # Discord has a 100-char limit
-                description=f"Ends {discord.utils.format_dt(pred.end_time, 'R')}",
-                value=str(pred.id)
+        
+        try:
+            options = [
+                discord.SelectOption(
+                    label=pred.question[:100],
+                    description=f"Ends {discord.utils.format_dt(pred.end_time, 'R')}",
+                    value=str(pred.id)
+                )
+                for pred in predictions
+            ]
+            self.logger.debug(f"Created {len(options)} select options")
+            
+            super().__init__(
+                placeholder="Choose a prediction...",
+                min_values=1,
+                max_values=1,
+                options=options
             )
-            for pred in predictions
-        ]
-        super().__init__(
-            placeholder="Choose a prediction...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
+        except Exception as e:
+            self.logger.error(f"Error creating PredictionSelect: {e}", exc_info=True)
+            raise
 
     async def callback(self, interaction: discord.Interaction):
-        prediction_id = int(self.values[0])
-        
-        # Get current prices
-        prices = await self.cog.service.get_current_prices(prediction_id)
-        
-        # Create betting options view
-        view = BettingOptionsView(prediction_id, prices, self.cog)
-        await interaction.response.edit_message(
-            content="Select an option to bet on:",
-            view=view
-        )
+        self.logger.debug("PredictionSelect callback triggered")
+        try:
+            prediction_id = int(self.values[0])
+            self.logger.debug(f"Selected prediction ID: {prediction_id}")
+            
+            self.logger.debug("Getting current prices")
+            prices = await self.cog.service.get_current_prices(prediction_id)
+            self.logger.debug(f"Retrieved prices: {prices}")
+            
+            self.logger.debug("Creating betting options view")
+            view = BettingOptionsView(prediction_id, prices, self.cog)
+            self.logger.debug("Updating interaction with betting options")
+            await interaction.response.edit_message(
+                content="Select an option to bet on:",
+                view=view
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error in PredictionSelect callback: {e}", exc_info=True)
+            await interaction.response.send_message(
+                "An error occurred while processing your selection.",
+                ephemeral=True
+            )
 
 class BettingOptionsView(discord.ui.View):
     def __init__(self, prediction_id: int, prices: dict, cog):
@@ -315,78 +427,6 @@ class BetAmountModal(discord.ui.Modal, title="Place Your Bet"):
                 ephemeral=True
             )
 
-    @app_commands.guild_only()
-    @app_commands.command(name="list_predictions", description="List all predictions")
-    async def list_predictions(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        try:
-            predictions = await self.service.get_all_predictions()
-            if not predictions:
-                await interaction.followup.send(
-                    "No predictions found.",
-                    ephemeral=True
-                )
-                return
-
-            # Create embed pages
-            pages = []
-            for prediction in predictions:
-                embed = discord.Embed(
-                    title="🎲 Prediction Market",
-                    description=prediction.question,
-                    color=discord.Color.blue(),
-                    timestamp=prediction.created_at
-                )
-                
-                # Get current prices/odds
-                prices = await self.service.get_current_prices(prediction.id)
-                
-                # Status field
-                status = "🟢 Active" if not prediction.resolved else "✅ Resolved"
-                if prediction.refunded:
-                    status = "💰 Refunded"
-                embed.add_field(name="Status", value=status, inline=True)
-                
-                # Time fields
-                embed.add_field(
-                    name="Ends",
-                    value=discord.utils.format_dt(prediction.end_time, 'R'),
-                    inline=True
-                )
-                
-                # Options and odds
-                options_text = ""
-                for option_text, price_info in prices.items():
-                    prob = (1 / price_info['price_per_share']) * 100 if price_info['price_per_share'] > 0 else 0
-                    options_text += f"\n{option_text}: {prob:.1f}%"
-                embed.add_field(name="Options", value=options_text, inline=False)
-                
-                # Volume
-                embed.add_field(
-                    name="Total Volume",
-                    value=f"{prediction.total_bets:,} points",
-                    inline=True
-                )
-                
-                if prediction.category:
-                    embed.add_field(name="Category", value=prediction.category, inline=True)
-                
-                creator = await self.bot.fetch_user(prediction.creator_id)
-                embed.set_footer(text=f"Created by {creator.display_name}")
-                
-                pages.append(embed)
-
-            # Send paginated view
-            await PaginatedPredictionView(pages).start(interaction)
-
-        except Exception as e:
-            self.logger.error(f"Error listing predictions: {e}")
-            await interaction.followup.send(
-                "An error occurred while listing predictions.",
-                ephemeral=True
-            )
-
 class PaginatedPredictionView(discord.ui.View):
     def __init__(self, pages):
         super().__init__()
@@ -494,7 +534,7 @@ class ResolveOptionButton(discord.ui.Button):
                 winning_bets = await self.cog.service.get_winning_bets(self.prediction_id)
                 
                 embed = discord.Embed(
-                    title="🎯 Prediction Resolved",
+                    title=" Prediction Resolved",
                     color=discord.Color.green(),
                     timestamp=datetime.now(timezone.utc)
                 )
