@@ -36,9 +36,12 @@ class Database:
         try:
             # Import all models to ensure they're registered with Base
             from .models import (
+                Base,
                 Player,
+                Transaction,
                 Prediction,
-                PredictionBet,
+                PredictionOption,
+                Bet
             )
             
             async with self.engine.begin() as conn:
