@@ -67,6 +67,18 @@ class DiscordBot(commands.Bot):
             self.logger.info(f"Python version: {platform.python_version()}")
             self.logger.info(f"Discord.py version: {discord.__version__}")
             
+            # Set start timestamp
+            self.start_timestamp = discord.utils.utcnow()
+            
+            # Start health check server first
+            try:
+                await self.start_web_server()
+                self.heartbeat.start()
+                self.logger.info("Health check system initialized")
+            except Exception as e:
+                self.logger.error(f"Failed to start health check server: {e}")
+                # Continue with bot startup even if health check fails
+            
             # Initialize database
             self.logger.info(f"Connecting to database at {self.config.database.url}")
             self.database = Database(self.config.database.url)
@@ -105,28 +117,45 @@ class DiscordBot(commands.Bot):
             else:
                 self.logger.warning("Transfer service not initialized!")
 
+            # Sync commands with Discord
+            self.logger.info("Syncing application commands...")
+            await self.tree.sync()
+            self.logger.info("Application commands synced")
+
         except Exception as e:
             self.logger.error(f"Error during setup: {e}")
             raise
 
-    @tasks.loop()
+    @tasks.loop(seconds=30)
     async def heartbeat(self):
         """Update heartbeat timestamp."""
-        self.last_heartbeat = discord.utils.utcnow()
-        await asyncio.sleep(30)  # Update every 30 seconds
+        try:
+            self.last_heartbeat = discord.utils.utcnow()
+            self.logger.debug(f"Heartbeat updated at {self.last_heartbeat}")
+        except Exception as e:
+            self.logger.error(f"Error in heartbeat task: {e}")
 
     @tasks.loop(count=1)
     async def start_web_server(self):
         """Start the web server for health checks."""
-        runner = web.AppRunner(self.web_app)
-        await runner.setup()
-        site = web.TCPSite(
-            runner,
-            host=self.config.web.host,
-            port=self.config.web.port
-        )
-        await site.start()
-        self.logger.info(f"Health check server started on {self.config.web.host}:{self.config.web.port}")
+        try:
+            runner = web.AppRunner(self.web_app)
+            await runner.setup()
+            site = web.TCPSite(
+                runner,
+                host=self.config.web.host,
+                port=self.config.web.port
+            )
+            await site.start()
+            self.logger.info(
+                f"Health check server started on "
+                f"http://{self.config.web.host}:{self.config.web.port}/health"
+            )
+            # Store runner for cleanup
+            self._web_runner = runner
+        except Exception as e:
+            self.logger.error(f"Failed to start web server: {e}")
+            raise
 
     async def health_check(self, request: web.Request) -> web.Response:
         """Handle health check requests."""
@@ -154,10 +183,11 @@ class DiscordBot(commands.Bot):
                 "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
                 "connected_guilds": connected_guilds,
                 "database_healthy": db_healthy,
-                "version": "1.0.0",  # Update as needed
+                "version": "1.0.0"  # Update as needed
             }
-
+            
             return web.json_response(health_data)
+            
         except Exception as e:
             self.logger.error(f"Health check error: {e}")
             return web.json_response(
@@ -186,6 +216,16 @@ class DiscordBot(commands.Bot):
         """Close the bot and cleanup resources."""
         try:
             self.logger.info("Starting bot shutdown sequence...")
+
+            # Stop tasks first
+            if self.heartbeat.is_running():
+                self.heartbeat.cancel()
+            
+            # Stop web server if it exists
+            if hasattr(self, '_web_runner'):
+                self.logger.info("Stopping health check server...")
+                await self._web_runner.cleanup()
+                self.logger.info("Health check server stopped")
 
             # 1. Unload cogs first (they might need database access during cleanup)
             self.logger.info("Unloading cogs...")
