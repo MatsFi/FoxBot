@@ -78,8 +78,9 @@ class Bet(Base):
     option_id: Mapped[int] = mapped_column(ForeignKey("prediction_options.id"))
     user_id: Mapped[int]  # Discord snowflake ID
     amount: Mapped[int]
+    economy: Mapped[str]  # Add this to track which economy the bet is from
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     prediction: Mapped["Prediction"] = relationship(back_populates="bets")
-    option: Mapped["PredictionOption"] = relationship(back_populates="bets")  # Changed from 'option'
+    option: Mapped["PredictionOption"] = relationship(back_populates="bets")

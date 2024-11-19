@@ -1,11 +1,30 @@
 # FoxBot Discord Bot
 
-A Discord bot featuring a prediction market system using cross-economy points.
+A Discord bot featuring a prediction market system that works with multiple external economies.
 
-## Prediction Market System
+## Core Design Principles
 
-The prediction market allows users to create predictions, place bets, and earn points based on correct predictions.
+### Economy System Architecture
+- **Local Economy**: Core economy that cannot participate in prediction markets
+- **External Economies**: Multiple external economies (e.g., Hackathon, FFS) can be connected
+- **Transfer Service**: Central service that handles all token movements between economies
+- **Initialization Order**: Critical for proper system setup
+  1. Local Economy (initializes transfer service)
+  2. External Economies (register with transfer service)
+  3. Prediction Market (uses registered external economies)
+### Service Design
+- All token movements must go through the Transfer Service
+- Services should not directly interact with each other
+- External economies register themselves with the Transfer Service
+- Prediction Market only works with registered external economies
 
+### Implementation Patterns
+- Use SQLAlchemy 2.0 best practices for database operations
+- Maintain timezone-safe datetime handling throughout
+- Use Discord's standard time formatting in all UI elements
+- Display Discord usernames consistently in all modals
+- Follow established patterns in `bot.py` for initialization
+- Use `/database/models.py` as the source of truth for data structures
 ### User Commands
 
 #### Creating Predictions
@@ -93,28 +112,34 @@ For prediction creators only:
 ```
 
 ## Project Structure
-
 ```
 FoxBot/
+├── bot.py                    # Main entry point and initialization
 ├── cogs/
-│   └── prediction_market.py     # Main prediction market commands
-├── database/
-│   ├── models.py                # Database models
-│   └── database.py              # Database connection handling
+│   ├── local_economy.py      # Core economy & transfer service init
+│   ├── hackathon_economy.py  # External economy implementation
+│   └── prediction_market.py  # Prediction market commands & UI
 ├── services/
-│   ├── prediction_market_service.py  # Business logic
-│   └── points_service.py        # Points management
-└── main.py                      # Bot initialization
+│   ├── transfer_service.py   # Central token movement handling
+│   ├── local_points.py       # Local economy service
+│   └── prediction_market.py  # Prediction market logic
+└── database/
+    ├── models.py             # SQLAlchemy models
+    └── database.py           # Database connection handling
 ```
 
-### Key Components
+## Development Guidelines
 
-- **Prediction Market Cog**: Handles Discord commands and UI
-- **Database Models**: Defines prediction and bet data structures
-- **Services**: Manages business logic and data operations
-- **Utils**: Helper functions and utilities
+### Adding New External Economies
+1. Create new economy service implementing standard interface
+2. Create new economy cog that registers with Transfer Service
+3. Add to cog_load_order in bot.py (after local_economy, before prediction_market)
+4. Economy automatically becomes available for prediction markets
 
-## Setup
+### Shutdown Sequence
+- Services and cogs are shut down in reverse order of initialization
+- Ensures proper cleanup of resources and database connections
+- Follows pattern established in bot.py close() method
 
 1. Clone the repository
 2. Install dependencies:

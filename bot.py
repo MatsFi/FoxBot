@@ -54,11 +54,11 @@ class DiscordBot(commands.Bot):
 
         # Define cog load order
         self.cog_load_order = [
-            'cogs.local_economy',
-#            'cogs.ffs_economy',
-            'cogs.hackathon_economy',
-            'cogs.prediction_market'
-        ]
+            'cogs.local_economy',      # 1. Starts first, initializes transfer service
+            # 'cogs.ffs_economy',
+            'cogs.hackathon_economy',  # 2. Registers with transfer service
+            'cogs.prediction_market'   # 3. Can now use transfer service and economies
+                ]
 
     async def setup_hook(self):
         """Initialize bot systems."""
@@ -91,16 +91,7 @@ class DiscordBot(commands.Bot):
             self.logger.info("Initializing local points service...")
             self.points_service = LocalPointsService(self.db_session)
             
-            # Initialize prediction market service
-            self.logger.info("Initializing prediction market service...")
-            self.prediction_market_service = PredictionMarketService(
-                session_factory=self.db_session,
-                bot=self,
-                points_service=self.points_service
-            )
-            await self.prediction_market_service.start()
-            
-            # Load cogs in specified order
+            # Load cogs FIRST - this sets up transfer service
             self.logger.info("Loading cogs in order...")
             for cog_name in self.cog_load_order:
                 try:
@@ -116,6 +107,11 @@ class DiscordBot(commands.Bot):
                 self.logger.info(f"Available external economies after setup: {economies}")
             else:
                 self.logger.warning("Transfer service not initialized!")
+
+            # THEN initialize prediction market service
+            self.logger.info("Initializing prediction market service...")
+            self.prediction_market_service = PredictionMarketService.from_bot(self)
+            await self.prediction_market_service.start()
 
             # Sync commands with Discord
             self.logger.info("Syncing application commands...")

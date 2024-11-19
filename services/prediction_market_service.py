@@ -6,15 +6,132 @@ from database.models import Prediction, PredictionOption, Bet
 import logging
 
 class PredictionMarketService:
-    def __init__(self, session_factory, bot, points_service=None):
+    @classmethod
+    def from_bot(cls, bot):
+        """Create a PredictionMarketService instance from a bot instance."""
+        return cls(
+            session_factory=bot.db_session,
+            bot=bot
+        )
+
+    def __init__(self, session_factory, bot):
         self.session_factory = session_factory
         self.bot = bot
-        self.points_service = points_service
         self.logger = logging.getLogger(__name__)
         self._market_balance = {}
         self._running = False
         self._notification_tasks = {}
         self.k_constant = 100 * 100
+        
+        # Get available economies from transfer service instead of parsing cog names
+        self.available_economies = list(bot.transfer_service._external_services.keys())
+        self.logger.info(f"Prediction Market initialized with economies: {self.available_economies}")
+
+    async def get_available_economies(self) -> List[str]:
+        """Get list of available external economies for betting."""
+        # Get fresh list from transfer service in case it changed
+        return list(self.bot.transfer_service._external_services.keys())
+
+    async def place_bet(
+        self,
+        prediction_id: int,
+        option_text: str,
+        user_id: int,
+        amount: int,
+        economy: str
+    ) -> bool:
+        """Place a bet on a prediction option."""
+        self.logger.debug(f"Placing bet: prediction={prediction_id}, option={option_text}, user={user_id}, amount={amount}, economy={economy}")
+        
+        if economy not in self.available_economies:
+            self.logger.error(f"Invalid economy {economy}. Must be one of: {self.available_economies}")
+            return False
+
+        try:
+            async with self.session_factory() as session:
+                # Load prediction with options
+                stmt = (
+                    select(Prediction)
+                    .options(selectinload(Prediction.options))
+                    .where(Prediction.id == prediction_id)
+                )
+                result = await session.execute(stmt)
+                prediction = result.scalar_one_or_none()
+                
+                if not prediction:
+                    self.logger.error(f"Prediction {prediction_id} not found")
+                    return False
+                    
+                if prediction.resolved:
+                    self.logger.error("Cannot bet on resolved prediction")
+                    return False
+                    
+                # Ensure end_time is timezone-aware before comparison
+                prediction_end_time = prediction.end_time
+                if prediction_end_time.tzinfo is None:
+                    prediction_end_time = prediction_end_time.replace(tzinfo=timezone.utc)
+                    
+                if prediction_end_time <= datetime.now(timezone.utc):
+                    self.logger.error("Cannot bet on expired prediction")
+                    return False
+                
+                # Find the matching option
+                option = next(
+                    (opt for opt in prediction.options if opt.text == option_text),
+                    None
+                )
+                if not option:
+                    self.logger.error(f"Option {option_text} not found")
+                    return False
+                
+                # Get the external service and verify balance
+                external_service = self.bot.transfer_service.get_external_service(economy)
+                balance = await external_service.get_balance(user_id)
+                if balance < amount:
+                    self.logger.error(f"Insufficient {economy} balance: {balance} < {amount}")
+                    return False
+
+                # Remove points from external economy
+                if not await external_service.remove_points(user_id, amount):
+                    self.logger.error(f"Failed to remove points from {economy} economy")
+                    return False
+
+                # Create the bet with economy information
+                bet = Bet(
+                    prediction_id=prediction_id,
+                    option_id=option.id,
+                    user_id=user_id,
+                    amount=amount,
+                    economy=economy,  # Store which economy the bet came from
+                    created_at=datetime.now(timezone.utc)
+                )
+                session.add(bet)
+                
+                # Update prediction total bets
+                prediction.total_bets += amount
+                
+                # Deduct points from user
+                await external_service.remove_points(user_id, amount)
+                
+                # Update liquidity pools using AMM formula
+                shares = await self.calculate_shares_for_points(prediction_id, option.id, amount)
+                option.liquidity_pool -= shares
+                
+                # Get opposite option and update its pool
+                opposite_option = next(
+                    (opt for opt in prediction.options if opt.id != option.id),
+                    None
+                )
+                if opposite_option:
+                    opposite_option.liquidity_pool += amount
+                
+                await session.commit()
+                self.logger.info(f"Successfully placed {economy} bet for user {user_id} on prediction {prediction_id}")
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Error placing bet: {e}", exc_info=True)
+            return False
 
     async def start(self):
         """Initialize the service and load existing predictions."""

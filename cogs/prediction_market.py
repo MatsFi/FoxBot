@@ -4,6 +4,7 @@ from discord import app_commands
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 import logging
+from services import PredictionMarketService
 
 def is_admin():
     def predicate(interaction: discord.Interaction) -> bool:
@@ -15,9 +16,25 @@ class PredictionMarket(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.service = bot.prediction_market_service
+        self.service = None  # Initialize as None
         self.logger = logging.getLogger(__name__)
         self.active_views = {}
+        self.logger.info("PredictionMarket cog initialized")
+
+    async def cog_load(self):
+        """Called when the cog is loaded."""
+        self.logger.info("PredictionMarket cog loading...")
+        if not self.service:
+            self.logger.debug("Initializing prediction market service...")
+            self.service = PredictionMarketService.from_bot(self.bot)
+            await self.service.start()
+            self.logger.info(f"Prediction market service initialized: {self.service}")
+
+    async def cog_unload(self):
+        """Called when the cog is unloaded."""
+        if self.service:
+            await self.service.stop()
+            self.logger.info("Prediction market service stopped")
 
     @app_commands.guild_only()
     @app_commands.command(name="list_predictions", description="List all predictions")
@@ -196,6 +213,25 @@ class PredictionMarket(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         try:
+            self.logger.debug(f"Checking service state in bet command:")
+            self.logger.debug(f"Self service: {self.service}")
+            self.logger.debug(f"Bot prediction_market_service: {self.bot.prediction_market_service}")
+            self.logger.debug(f"Bot service type: {type(self.bot.prediction_market_service)}")
+            
+            if self.service is None:
+                self.logger.error("Prediction market service is None!")
+                if hasattr(self.bot, 'prediction_market_service'):
+                    self.logger.debug("Bot has prediction_market_service attribute")
+                    self.service = self.bot.prediction_market_service
+                    self.logger.debug(f"Reattached service: {self.service}")
+                else:
+                    self.logger.error("Bot missing prediction_market_service attribute!")
+                    await interaction.followup.send(
+                        "Prediction market service not available. Please try again later.",
+                        ephemeral=True
+                    )
+                    return
+
             self.logger.debug("Fetching active predictions")
             active_predictions = await self.service.get_active_predictions()
             self.logger.debug(f"Found {len(active_predictions) if active_predictions else 0} active predictions")
@@ -320,18 +356,41 @@ class BettingOptionsView(discord.ui.View):
         self.prediction_id = prediction_id
         self.cog = cog
         
-        # Add button for each option
+        # Only add economy selector if multiple economies are available
+        available_economies = cog.service.available_economies
+        if len(available_economies) > 1:
+            self.add_item(EconomySelect(available_economies))
+        
+        # Then add betting options
         for option_text, price_info in prices.items():
             button = BettingOptionButton(
                 option_text,
                 price_info,
                 prediction_id,
-                cog
+                cog,
+                # If only one economy, pass it directly
+                economy=available_economies[0] if len(available_economies) == 1 else None
             )
             self.add_item(button)
 
+class EconomySelect(discord.ui.Select):
+    def __init__(self, available_economies):
+        options = [
+            discord.SelectOption(
+                label=economy,
+                description=f"Bet using {economy} points"
+            )
+            for economy in available_economies
+        ]
+        super().__init__(
+            placeholder="Select economy to bet with",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
 class BettingOptionButton(discord.ui.Button):
-    def __init__(self, option_text: str, price_info: dict, prediction_id: int, cog):
+    def __init__(self, option_text: str, price_info: dict, prediction_id: int, cog, economy=None):
         # Format price info for display
         price = price_info['price_per_share']
         prob = (1 / price) * 100 if price > 0 else 0
@@ -344,27 +403,44 @@ class BettingOptionButton(discord.ui.Button):
         self.prediction_id = prediction_id
         self.cog = cog
         self.price_info = price_info
+        self.economy = economy  # Store single economy if provided
 
     async def callback(self, interaction: discord.Interaction):
-        # Show bet amount modal
+        # Get economy from select if multiple economies, or use the single economy
+        if self.economy is None:
+            # Find the economy select in the view
+            economy_select = [item for item in self.view.children if isinstance(item, EconomySelect)][0]
+            if not economy_select.values:
+                await interaction.response.send_message(
+                    "Please select an economy first!",
+                    ephemeral=True
+                )
+                return
+            economy = economy_select.values[0]
+        else:
+            economy = self.economy
+
+        # Show bet amount modal with the determined economy
         modal = BetAmountModal(
             self.prediction_id,
             self.option_text,
             self.price_info,
-            self.cog
+            self.cog,
+            economy
         )
         await interaction.response.send_modal(modal)
 
 class BetAmountModal(discord.ui.Modal, title="Place Your Bet"):
-    def __init__(self, prediction_id: int, option_text: str, price_info: dict, cog):
+    def __init__(self, prediction_id: int, option_text: str, price_info: dict, cog, economy: str):
         super().__init__()
         self.prediction_id = prediction_id
         self.option_text = option_text
         self.price_info = price_info
         self.cog = cog
+        self.economy = economy
 
         self.amount = discord.ui.TextInput(
-            label=f"Bet amount for {option_text}",
+            label=f"Bet amount ({economy} points)",
             placeholder="Enter amount to bet",
             required=True,
             min_length=1,
@@ -382,12 +458,12 @@ class BetAmountModal(discord.ui.Modal, title="Place Your Bet"):
                 )
                 return
 
-            # Place bet through service
             success = await self.cog.service.place_bet(
                 prediction_id=self.prediction_id,
                 option_text=self.option_text,
                 user_id=interaction.user.id,
-                amount=amount
+                amount=amount,
+                economy=self.economy
             )
 
             if success:
