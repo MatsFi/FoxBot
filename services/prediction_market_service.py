@@ -587,3 +587,67 @@ class PredictionMarketService:
         except Exception as e:
             self.logger.error(f"Error resolving prediction: {e}", exc_info=True)
             return False
+
+    async def get_prediction_total_bets(self, prediction_id: int) -> int:
+        """Get total bet amount for a prediction."""
+        self.logger.debug(f"Getting total bets for prediction {prediction_id}")
+        try:
+            async with self.session_factory() as session:
+                stmt = (
+                    select(Prediction)
+                    .where(Prediction.id == prediction_id)
+                )
+                result = await session.execute(stmt)
+                prediction = result.scalar_one_or_none()
+                
+                if not prediction:
+                    self.logger.error(f"Prediction {prediction_id} not found")
+                    return 0
+                
+                return prediction.total_bets
+                
+        except Exception as e:
+            self.logger.error(f"Error getting total bets: {e}", exc_info=True)
+            return 0
+
+    async def get_winning_bets(self, prediction_id: int) -> List[Bet]:
+        """Get list of winning bets for a resolved prediction."""
+        self.logger.debug(f"Getting winning bets for prediction {prediction_id}")
+        try:
+            async with self.session_factory() as session:
+                # Get prediction with result
+                prediction = await session.get(Prediction, prediction_id)
+                if not prediction or not prediction.result:
+                    self.logger.error(f"Prediction {prediction_id} not found or not resolved")
+                    return []
+
+                # Get winning option
+                stmt = (
+                    select(PredictionOption)
+                    .where(
+                        PredictionOption.prediction_id == prediction_id,
+                        PredictionOption.text == prediction.result
+                    )
+                )
+                result = await session.execute(stmt)
+                winning_option = result.scalar_one_or_none()
+                if not winning_option:
+                    self.logger.error(f"Winning option not found for prediction {prediction_id}")
+                    return []
+
+                # Get winning bets
+                stmt = (
+                    select(Bet)
+                    .where(
+                        Bet.prediction_id == prediction_id,
+                        Bet.option_id == winning_option.id
+                    )
+                )
+                result = await session.execute(stmt)
+                winning_bets = result.scalars().all()
+                
+                return list(winning_bets)
+
+        except Exception as e:
+            self.logger.error(f"Error getting winning bets: {e}", exc_info=True)
+            return []
