@@ -260,28 +260,38 @@ class PredictionMarket(commands.Cog):
     @app_commands.guild_only()
     @app_commands.command(name="resolve_prediction", description="Resolve a prediction")
     async def resolve_prediction_command(self, interaction: discord.Interaction):
+        self.logger.debug("Starting resolve_prediction_command")
         await interaction.response.defer(ephemeral=True)
 
-        # Get unresolved predictions created by this user
-        unresolved_predictions = await self.service.get_resolvable_predictions(interaction.user.id)
-        
-        if not unresolved_predictions:
+        try:
+            self.logger.debug("Fetching unresolved predictions for user")
+            unresolved_predictions = await self.service.get_resolvable_predictions(interaction.user.id)
+            self.logger.debug(f"Found {len(unresolved_predictions) if unresolved_predictions else 0} unresolved predictions")
+
+            if not unresolved_predictions:
+                self.logger.debug("No unresolved predictions found for user")
+                await interaction.followup.send(
+                    "You don't have any unresolved predictions to resolve. "
+                    "Only the creator of a prediction can resolve it.", 
+                    ephemeral=True
+                )
+                return
+
+            self.logger.debug("Creating prediction selection view")
+            view = ResolvePredictionView(unresolved_predictions, self)
+            self.logger.debug("Sending selection view to user")
             await interaction.followup.send(
-                "You don't have any unresolved predictions to resolve. "
-                "Only the creator of a prediction can resolve it.", 
+                "Select a prediction to resolve:",
+                view=view,
                 ephemeral=True
             )
-            return
 
-        # Create prediction selection view
-        view = ResolvePredictionView(unresolved_predictions, self)
-        await interaction.followup.send(
-            "Select a prediction to resolve:",
-            view=view,
-            ephemeral=True
-        )
-
-
+        except Exception as e:
+            self.logger.error(f"Error in resolve_prediction_command: {e}", exc_info=True)
+            await interaction.followup.send(
+                "An error occurred while processing the resolve prediction command.",
+                ephemeral=True
+            )
 
     async def cleanup_old_views(self):
         """Remove views for resolved or expired predictions."""
@@ -535,10 +545,14 @@ class PaginatedPredictionView(discord.ui.View):
 class ResolvePredictionView(discord.ui.View):
     def __init__(self, predictions, cog):
         super().__init__()
+        self.logger = logging.getLogger(__name__)
+        self.logger.debug("Initializing ResolvePredictionView")
         self.add_item(ResolvePredictionSelect(predictions, cog))
 
 class ResolvePredictionSelect(discord.ui.Select):
     def __init__(self, predictions, cog):
+        self.logger = logging.getLogger(__name__)
+        self.logger.debug("Initializing ResolvePredictionSelect")
         self.cog = cog
         options = [
             discord.SelectOption(
@@ -548,6 +562,7 @@ class ResolvePredictionSelect(discord.ui.Select):
             )
             for pred in predictions
         ]
+        self.logger.debug(f"Created {len(options)} select options")
         super().__init__(
             placeholder="Select a prediction to resolve...",
             min_values=1,
@@ -556,32 +571,48 @@ class ResolvePredictionSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        prediction_id = int(self.values[0])
-        
-        # Get prediction options
-        prediction = await self.cog.service.get_prediction(prediction_id)
-        if not prediction:
+        self.logger.debug("ResolvePredictionSelect callback triggered")
+        try:
+            prediction_id = int(self.values[0])
+            self.logger.debug(f"Selected prediction ID: {prediction_id}")
+            
+            # Get prediction options
+            prediction = await self.cog.service.get_prediction(prediction_id)
+            if not prediction:
+                self.logger.error(f"Prediction {prediction_id} not found")
+                await interaction.response.send_message(
+                    "Prediction not found.",
+                    ephemeral=True
+                )
+                return
+
+            # Create resolution options view
+            self.logger.debug("Creating resolution options view")
+            view = ResolveOptionsView(prediction, self.cog)
+            self.logger.debug("Updating interaction with resolution options")
+            await interaction.response.edit_message(
+                content="Select the winning option:",
+                view=view
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error in ResolvePredictionSelect callback: {e}", exc_info=True)
             await interaction.response.send_message(
-                "Prediction not found.",
+                "An error occurred while processing your selection.",
                 ephemeral=True
             )
-            return
-
-        # Create resolution options view
-        view = ResolveOptionsView(prediction, self.cog)
-        await interaction.response.edit_message(
-            content="Select the winning option:",
-            view=view
-        )
 
 class ResolveOptionsView(discord.ui.View):
     def __init__(self, prediction, cog):
         super().__init__()
+        self.logger = logging.getLogger(__name__)
+        self.logger.debug(f"Initializing ResolveOptionsView for prediction {prediction.id}")
         self.prediction = prediction
         self.cog = cog
         
         # Add button for each option
         for option in prediction.options:
+            self.logger.debug(f"Adding resolution button for option: {option.text}")
             button = ResolveOptionButton(option.text, prediction.id, cog)
             self.add_item(button)
 
@@ -591,13 +622,17 @@ class ResolveOptionButton(discord.ui.Button):
             label=option_text,
             style=discord.ButtonStyle.primary
         )
+        self.logger = logging.getLogger(__name__)
         self.option_text = option_text
         self.prediction_id = prediction_id
         self.cog = cog
+        self.logger.debug(f"Initialized resolution button for option: {option_text}")
 
     async def callback(self, interaction: discord.Interaction):
+        self.logger.debug(f"Resolution button callback triggered for option: {self.option_text}")
         try:
             # Resolve the prediction through service
+            self.logger.debug(f"Attempting to resolve prediction {self.prediction_id} with winner: {self.option_text}")
             success = await self.cog.service.resolve_prediction(
                 prediction_id=self.prediction_id,
                 winning_option=self.option_text,
@@ -605,12 +640,13 @@ class ResolveOptionButton(discord.ui.Button):
             )
 
             if success:
+                self.logger.debug("Resolution successful, getting payout information")
                 # Get payout information
                 total_bets = await self.cog.service.get_prediction_total_bets(self.prediction_id)
                 winning_bets = await self.cog.service.get_winning_bets(self.prediction_id)
                 
                 embed = discord.Embed(
-                    title=" Prediction Resolved",
+                    title="Prediction Resolved",
                     color=discord.Color.green(),
                     timestamp=datetime.now(timezone.utc)
                 )
@@ -618,24 +654,23 @@ class ResolveOptionButton(discord.ui.Button):
                 embed.add_field(name="Total Pool", value=f"{total_bets:,} points", inline=True)
                 embed.add_field(name="Winning Bets", value=f"{len(winning_bets)} bets", inline=True)
                 
+                self.logger.debug("Sending resolution success message")
                 await interaction.response.edit_message(
                     content=None,
                     embed=embed,
                     view=None
                 )
                 
-                # Log resolution
-                self.cog.logger.info(
-                    f"Prediction {self.prediction_id} resolved with winner: {self.option_text}"
-                )
+                self.logger.info(f"Prediction {self.prediction_id} resolved with winner: {self.option_text}")
             else:
+                self.logger.error(f"Failed to resolve prediction {self.prediction_id}")
                 await interaction.response.send_message(
                     "Failed to resolve prediction. It may have already been resolved.",
                     ephemeral=True
                 )
 
         except Exception as e:
-            self.cog.logger.error(f"Error resolving prediction: {e}")
+            self.logger.error(f"Error resolving prediction: {e}", exc_info=True)
             await interaction.response.send_message(
                 "An error occurred while resolving the prediction.",
                 ephemeral=True

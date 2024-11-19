@@ -446,3 +446,150 @@ class PredictionMarketService:
         except Exception as e:
             self.logger.error(f"Error getting active predictions: {e}", exc_info=True)
             raise
+
+    async def get_resolvable_predictions(self, user_id: int) -> List[Prediction]:
+        """Get predictions that can be resolved by the given user."""
+        self.logger.debug(f"Getting resolvable predictions for user {user_id}")
+        try:
+            async with self.session_factory() as session:
+                stmt = (
+                    select(Prediction)
+                    .options(
+                        selectinload(Prediction.options),
+                        selectinload(Prediction.bets)
+                    )
+                    .where(
+                        Prediction.creator_id == user_id,
+                        Prediction.resolved == False,
+                        Prediction.end_time <= datetime.now(timezone.utc)
+                    )
+                    .order_by(Prediction.created_at.desc())
+                )
+                
+                self.logger.debug("Executing query")
+                result = await session.execute(stmt)
+                predictions = result.scalars().unique().all()
+                self.logger.debug(f"Found {len(predictions)} resolvable predictions")
+                
+                # Convert to list to ensure all data is loaded
+                return list(predictions)
+                
+        except Exception as e:
+            self.logger.error(f"Error getting resolvable predictions: {e}", exc_info=True)
+            raise
+
+    async def get_prediction(self, prediction_id: int) -> Optional[Prediction]:
+        """Get a single prediction with all its related data."""
+        self.logger.debug(f"Getting prediction {prediction_id}")
+        try:
+            async with self.session_factory() as session:
+                # Load prediction with options and bets in a single query
+                stmt = (
+                    select(Prediction)
+                    .options(
+                        selectinload(Prediction.options),
+                        selectinload(Prediction.bets)
+                    )
+                    .where(Prediction.id == prediction_id)
+                )
+                
+                result = await session.execute(stmt)
+                prediction = result.scalar_one_or_none()
+                
+                if prediction is None:
+                    self.logger.error(f"Prediction {prediction_id} not found")
+                    return None
+                
+                self.logger.debug(f"Found prediction: {prediction.question}")
+                return prediction
+                
+        except Exception as e:
+            self.logger.error(f"Error getting prediction: {e}", exc_info=True)
+            raise
+
+    async def resolve_prediction(
+        self,
+        prediction_id: int,
+        winning_option: str,
+        resolver_id: int
+    ) -> bool:
+        """Resolve a prediction and process payouts."""
+        self.logger.debug(f"Resolving prediction {prediction_id} with winner: {winning_option}")
+        
+        try:
+            async with self.session_factory() as session:
+                # Load prediction with options and bets
+                stmt = (
+                    select(Prediction)
+                    .options(
+                        selectinload(Prediction.options),
+                        selectinload(Prediction.bets)
+                    )
+                    .where(Prediction.id == prediction_id)
+                )
+                result = await session.execute(stmt)
+                prediction = result.scalar_one_or_none()
+                
+                if not prediction:
+                    self.logger.error(f"Prediction {prediction_id} not found")
+                    return False
+                
+                # Verify resolver is the creator
+                if prediction.creator_id != resolver_id:
+                    self.logger.error(f"User {resolver_id} is not the creator of prediction {prediction_id}")
+                    return False
+                
+                # Verify prediction can be resolved
+                if prediction.resolved:
+                    self.logger.error(f"Prediction {prediction_id} is already resolved")
+                    return False
+                
+                if prediction.end_time > datetime.now(timezone.utc):
+                    self.logger.error(f"Prediction {prediction_id} hasn't ended yet")
+                    return False
+                
+                # Find winning option
+                winning_opt = next(
+                    (opt for opt in prediction.options if opt.text == winning_option),
+                    None
+                )
+                if not winning_opt:
+                    self.logger.error(f"Option {winning_option} not found for prediction {prediction_id}")
+                    return False
+                
+                # Mark prediction as resolved
+                prediction.resolved = True
+                prediction.result = winning_option
+                
+                # Process payouts for winning bets
+                winning_bets = [
+                    bet for bet in prediction.bets 
+                    if bet.option_id == winning_opt.id
+                ]
+                
+                total_pool = prediction.total_bets
+                winning_pool = sum(bet.amount for bet in winning_bets)
+                
+                if winning_pool > 0:
+                    payout_multiplier = total_pool / winning_pool
+                    
+                    # Process payouts through appropriate external economies
+                    for bet in winning_bets:
+                        payout = int(bet.amount * payout_multiplier)
+                        external_service = self.bot.transfer_service.get_external_service(bet.economy)
+                        await external_service.add_points(bet.user_id, payout)
+                        self.logger.info(
+                            f"Paid {payout} points to user {bet.user_id} "
+                            f"from {bet.economy} economy for winning bet"
+                        )
+                
+                await session.commit()
+                self.logger.info(
+                    f"Successfully resolved prediction {prediction_id} "
+                    f"with winner: {winning_option}"
+                )
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"Error resolving prediction: {e}", exc_info=True)
+            return False
