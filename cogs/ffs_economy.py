@@ -2,9 +2,11 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from datetime import datetime, timezone
 from services import FFSPointsManager, FFSServiceAdapter
 from utils.decorators import is_admin
 from .economy_cog_template import ExternalEconomyCog
+from database.models import utc_now, ensure_utc
 
 class FFSEconomy(ExternalEconomyCog):
     """Handles FFS economy operations."""
@@ -17,28 +19,6 @@ class FFSEconomy(ExternalEconomyCog):
             "FFS"
         )
 
-    @commands.hybrid_command(
-        name="ffs_deposit",
-        description="Deposit FFS points into your Local account"
-    )
-    @app_commands.describe(
-        amount="Amount of points to transfer"
-    )
-    async def deposit(self, ctx: commands.Context, amount: int) -> None:
-        """Deposit FFS points into your Local account."""
-        await self.process_deposit(ctx, amount)
-
-    @commands.hybrid_command(
-        name="ffs_withdraw",
-        description="Withdraw points from your Local account to FFS"
-    )
-    @app_commands.describe(
-        amount="Amount of points to withdraw"
-    )
-    async def withdraw(self, ctx: commands.Context, amount: int) -> None:
-        """Withdraw points from Local account to FFS economy."""
-        await self.process_withdraw(ctx, amount)
-
     @app_commands.guild_only()
     @app_commands.command(name="ffs_balance", description="Check your Points balance")
     async def check_balance(self, interaction: discord.Interaction):
@@ -46,7 +26,15 @@ class FFSEconomy(ExternalEconomyCog):
         
         try:
             balance = await self.points_service.get_balance(interaction.user.id)
-            await interaction.followup.send(f"Your balance: {balance:,} Points", ephemeral=True)
+            embed = discord.Embed(
+                title="FFS Points Balance",
+                color=discord.Color.blue(),
+                timestamp=utc_now()  # Use UTC for embed timestamp
+            )
+            embed.add_field(name="Balance", value=f"{balance:,} Points")
+            embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
@@ -149,44 +137,29 @@ class FFSEconomy(ExternalEconomyCog):
         except Exception as e:
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
-    @commands.hybrid_command(
-        name="ffs_leaderboard",
-        description="Show the points leaderboard"
-    )
-    async def leaderboard(self, ctx: commands.Context) -> None:
-        """Show the server's points leaderboard."""
+    @app_commands.guild_only()
+    @app_commands.command(name="ffs_leaderboard", description="Show the points leaderboard")
+    async def leaderboard(self, interaction: discord.Interaction):
         try:
-            # Get all members with points
             members = []
-            for member in ctx.guild.members:
-                if not member.bot:  # Skip bots
+            for member in interaction.guild.members:
+                if not member.bot:
                     balance = await self.points_service.get_balance(member.id)
                     if balance > 0:
                         members.append((member, balance))
 
-            # Sort by balance
             members.sort(key=lambda x: x[1], reverse=True)
 
             embed = discord.Embed(
-                title="🏆 Points Leaderboard",
-                color=discord.Color.gold()
+                title="🏆 FFS Points Leaderboard",
+                color=discord.Color.gold(),
+                timestamp=utc_now()  # Use UTC for embed timestamp
             )
 
-            # Medal emojis for top 3
-            medals = {
-                0: "🥇",
-                1: "🥈",
-                2: "🥉"
-            }
-
-            # Add members to leaderboard
+            medals = {0: "🥇", 1: "🥈", 2: "🥉"}
             leaderboard_text = []
-            for idx, (member, balance) in enumerate(members[:10], 1):
-                if idx <= 3:
-                    prefix = medals[idx-1]
-                else:
-                    prefix = f"`#{idx}`"
-                
+            for idx, (member, balance) in enumerate(members[:10]):
+                prefix = medals.get(idx, f"`#{idx+1}`")
                 leaderboard_text.append(
                     f"{prefix} {member.mention}: **{balance:,}** points"
                 )
@@ -197,11 +170,11 @@ class FFSEconomy(ExternalEconomyCog):
                 embed.description = "No points recorded yet!"
 
             embed.set_footer(text=f"Total Participants: {len(members)}")
-            await ctx.reply(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
         except Exception as e:
-            await ctx.reply(
-                f"❌ Error fetching leaderboard: {str(e)}",
+            await interaction.response.send_message(
+                f"Error fetching leaderboard: {str(e)}",
                 ephemeral=True
             )
 

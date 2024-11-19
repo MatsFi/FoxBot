@@ -2,6 +2,8 @@
 import aiohttp
 from typing import Dict
 import logging
+from datetime import datetime, timezone
+from database.models import utc_now, ensure_utc
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +21,6 @@ class FFSPointsManager:
     def from_bot(cls, bot):
         """Create a FFSPointsManager instance from a bot instance."""
         return cls(
-            # game host's API config
             api_config={
                 'base_url': bot.config.api_base_url,
                 'api_key': bot.config.ffs_api_key,
@@ -43,7 +44,8 @@ class FFSPointsManager:
         """Get headers for API requests."""
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-Request-Time": utc_now().isoformat()
         }
 
     async def get_balance(self, user_id: int) -> int:
@@ -123,27 +125,6 @@ class FFSPointsManager:
                 f"Error transferring points from {from_user_id} to {to_user_id}: {str(e)}"
             )
             return False
-
-    async def get_top_balances(self, limit: int = 10) -> list[tuple[int, int]]:
-        """Get top point balances from the FFS API."""
-        if not self._session:
-            await self.initialize()
-
-        try:
-            async with self._session.get(
-                f"{self.base_url}/api/v4/realms/{self.realm_id}/leaderboard",
-                headers=await self._get_headers(),
-                params={"limit": limit}
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return [(entry['userId'], entry['balance']) for entry in data]
-                else:
-                    error_data = await response.json()
-                    raise PointsError(f"Failed to get leaderboard: {error_data}")
-        except Exception as e:
-            self.logger.error(f"Error getting top balances: {str(e)}")
-            raise PointsError(f"Failed to get leaderboard: {str(e)}")
 
 class PointsError(Exception):
     """Custom exception for points-related errors."""

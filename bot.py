@@ -55,7 +55,7 @@ class DiscordBot(commands.Bot):
         # Define cog load order
         self.cog_load_order = [
             'cogs.local_economy',      # 1. Starts first, initializes transfer service
-            # 'cogs.ffs_economy',
+            'cogs.ffs_economy',
             'cogs.hackathon_economy',  # 2. Registers with transfer service
             'cogs.prediction_market'   # 3. Can now use transfer service and economies
                 ]
