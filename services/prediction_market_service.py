@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
-from database.models import Prediction, PredictionOption, Bet
+from database.models import Prediction, PredictionOption, Bet, utc_now, ensure_utc
 import logging
 
 class PredictionMarketService:
@@ -23,14 +23,9 @@ class PredictionMarketService:
         self._notification_tasks = {}
         self.k_constant = 100 * 100
         
-        # Get available economies from transfer service instead of parsing cog names
+        # Get available economies from transfer service
         self.available_economies = list(bot.transfer_service._external_services.keys())
         self.logger.info(f"Prediction Market initialized with economies: {self.available_economies}")
-
-    async def get_available_economies(self) -> List[str]:
-        """Get list of available external economies for betting."""
-        # Get fresh list from transfer service in case it changed
-        return list(self.bot.transfer_service._external_services.keys())
 
     async def place_bet(
         self,
@@ -66,12 +61,11 @@ class PredictionMarketService:
                     self.logger.error("Cannot bet on resolved prediction")
                     return False
                     
-                # Ensure end_time is timezone-aware before comparison
-                prediction_end_time = prediction.end_time
-                if prediction_end_time.tzinfo is None:
-                    prediction_end_time = prediction_end_time.replace(tzinfo=timezone.utc)
+                # Ensure end_time comparison is timezone-aware
+                prediction_end_time = ensure_utc(prediction.end_time)
+                current_time = utc_now()
                     
-                if prediction_end_time <= datetime.now(timezone.utc):
+                if prediction_end_time <= current_time:
                     self.logger.error("Cannot bet on expired prediction")
                     return False
                 
@@ -96,14 +90,14 @@ class PredictionMarketService:
                     self.logger.error(f"Failed to remove points from {economy} economy")
                     return False
 
-                # Create the bet with economy information
+                # Create the bet with UTC timestamp
                 bet = Bet(
                     prediction_id=prediction_id,
                     option_id=option.id,
                     user_id=user_id,
                     amount=amount,
-                    economy=economy,  # Store which economy the bet came from
-                    created_at=datetime.now(timezone.utc)
+                    economy=economy,
+                    created_at=utc_now()
                 )
                 session.add(bet)
                 
@@ -368,14 +362,17 @@ class PredictionMarketService:
         """Create a new prediction market."""
         self.logger.info(f"Creating prediction: {question}")
         
+        # Ensure end_time is UTC
+        end_time = ensure_utc(end_time)
+        
         async with self.session_factory() as session:
             async with session.begin():
-                # Create prediction
                 prediction = Prediction(
                     question=question,
                     end_time=end_time,
                     creator_id=creator_id,
-                    category=category
+                    category=category,
+                    created_at=utc_now()
                 )
                 session.add(prediction)
                 
@@ -421,7 +418,7 @@ class PredictionMarketService:
         self.logger.debug("Starting get_active_predictions")
         try:
             async with self.session_factory() as session:
-                self.logger.debug("Building query for active predictions")
+                current_time = utc_now()
                 stmt = (
                     select(Prediction)
                     .options(
@@ -430,17 +427,13 @@ class PredictionMarketService:
                     )
                     .where(
                         Prediction.resolved == False,
-                        Prediction.end_time > datetime.now(timezone.utc)
+                        Prediction.end_time > current_time
                     )
                     .order_by(Prediction.created_at.desc())
                 )
                 
-                self.logger.debug("Executing query")
                 result = await session.execute(stmt)
                 predictions = result.scalars().unique().all()
-                self.logger.debug(f"Found {len(predictions)} active predictions")
-                
-                # Convert to list to ensure all data is loaded
                 return list(predictions)
                 
         except Exception as e:
@@ -452,6 +445,7 @@ class PredictionMarketService:
         self.logger.debug(f"Getting resolvable predictions for user {user_id}")
         try:
             async with self.session_factory() as session:
+                current_time = utc_now()
                 stmt = (
                     select(Prediction)
                     .options(
@@ -461,17 +455,13 @@ class PredictionMarketService:
                     .where(
                         Prediction.creator_id == user_id,
                         Prediction.resolved == False,
-                        Prediction.end_time <= datetime.now(timezone.utc)
+                        Prediction.end_time <= current_time
                     )
                     .order_by(Prediction.created_at.desc())
                 )
                 
-                self.logger.debug("Executing query")
                 result = await session.execute(stmt)
                 predictions = result.scalars().unique().all()
-                self.logger.debug(f"Found {len(predictions)} resolvable predictions")
-                
-                # Convert to list to ensure all data is loaded
                 return list(predictions)
                 
         except Exception as e:
@@ -544,7 +534,11 @@ class PredictionMarketService:
                     self.logger.error(f"Prediction {prediction_id} is already resolved")
                     return False
                 
-                if prediction.end_time > datetime.now(timezone.utc):
+                # Ensure timezone-aware comparison
+                current_time = utc_now()
+                prediction_end_time = ensure_utc(prediction.end_time)
+                
+                if prediction_end_time > current_time:
                     self.logger.error(f"Prediction {prediction_id} hasn't ended yet")
                     return False
                 

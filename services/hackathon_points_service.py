@@ -2,6 +2,8 @@
 import aiohttp
 from typing import Dict
 import logging
+from datetime import datetime, timezone
+from database.models import utc_now, ensure_utc
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,8 @@ class HackathonPointsManager:
         """Get headers for API requests."""
         return {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-Request-Time": utc_now().isoformat()
         }
 
     async def get_balance(self, user_id: int) -> int:

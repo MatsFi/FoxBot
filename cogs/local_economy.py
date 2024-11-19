@@ -2,8 +2,10 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from datetime import datetime, timezone
 from services import LocalPointsService, CrossEconomyTransferService
 from utils.decorators import is_admin
+from database.models import utc_now, ensure_utc
 import logging
 
 class LocalEconomy(commands.Cog):
@@ -12,7 +14,6 @@ class LocalEconomy(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.logger = logging.getLogger(__name__)
-        self.logger.info("Local Economy cog initialized")
         self.points_service = LocalPointsService.from_bot(bot)
         
         # Initialize transfer service and attach to bot for other cogs to access
@@ -256,53 +257,41 @@ class LocalEconomy(commands.Cog):
     #             ephemeral=True
     #         )
 
-    # @app_commands.command(name="local_debug_balance", description="[Admin] Debug balance information")
-    # @is_admin()
-    # async def debug_balance(self, interaction: discord.Interaction):
-    #     """Debug command to show detailed balance information."""
-    #     await interaction.response.defer(ephemeral=True)
+    @app_commands.guild_only()
+    @app_commands.command(name="local_debug_balance", description="[Admin] Debug balance information")
+    @is_admin()
+    async def debug_balance(self, interaction: discord.Interaction):
+        """Debug command to show detailed balance information."""
+        await interaction.response.defer(ephemeral=True)
         
-    #     try:
-    #         # Get balance
-    #         balance = await self.points_service.get_balance(
-    #             str(interaction.user.id),
-    #             username=interaction.user.name
-    #         )
+        try:
+            transactions = await self.points_service.get_transactions(str(interaction.user.id))
             
-    #         # Get recent transactions
-    #         transactions = await self.points_service.get_transactions(
-    #             str(interaction.user.id)
-    #         )
+            embed = discord.Embed(
+                title="🔍 Balance Debug Information",
+                color=discord.Color.blue(),
+                timestamp=utc_now()  # Use UTC for embed timestamp
+            )
             
-    #         embed = discord.Embed(
-    #             title="🔍 Balance Debug Information",
-    #             color=discord.Color.blue()
-    #         )
+            if transactions:
+                trans_text = "\n".join(
+                    f"• {discord.utils.format_dt(ensure_utc(t.timestamp), 'R')}: "  # Use Discord's time format
+                    f"{t.amount:+d} ({t.description if hasattr(t, 'description') else 'No description'})"
+                    for t in transactions[-10:]  # Show last 10 transactions
+                )
+                embed.add_field(
+                    name="Recent Transactions",
+                    value=trans_text or "No transactions",
+                    inline=False
+                )
             
-    #         embed.add_field(
-    #             name="Current Balance",
-    #             value=f"{balance:,} tokens",
-    #             inline=False
-    #         )
+            await interaction.followup.send(embed=embed, ephemeral=True)
             
-    #         if transactions:
-    #             trans_text = "\n".join(
-    #                 f"• {t.timestamp.strftime('%Y-%m-%d %H:%M:%S')}: {t.amount:+d} ({t.description})"
-    #                 for t in transactions[-10:]  # Show last 10 transactions
-    #             )
-    #             embed.add_field(
-    #                 name="Recent Transactions",
-    #                 value=trans_text or "No transactions",
-    #                 inline=False
-    #             )
-            
-    #         await interaction.followup.send(embed=embed, ephemeral=True)
-            
-    #     except Exception as e:
-    #         await interaction.followup.send(
-    #             f"❌ Error getting debug info: {str(e)}",
-    #             ephemeral=True
-    #         )
+        except Exception as e:
+            await interaction.followup.send(
+                f"❌ Error getting debug info: {str(e)}",
+                ephemeral=True
+            )
 
 #    @token_mint.error
 #    @debug_balance.error

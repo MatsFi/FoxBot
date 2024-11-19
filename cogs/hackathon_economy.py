@@ -2,9 +2,11 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+from datetime import datetime, timezone
 from services import HackathonPointsManager, HackathonServiceAdapter
 from utils.decorators import is_admin
 from .economy_cog_template import ExternalEconomyCog
+from database.models import utc_now, ensure_utc
 
 class HackathonEconomy(ExternalEconomyCog):
     """Handles Hackathon economy operations."""
@@ -46,7 +48,15 @@ class HackathonEconomy(ExternalEconomyCog):
         
         try:
             balance = await self.points_service.get_balance(interaction.user.id)
-            await interaction.followup.send(f"Your balance: {balance:,} Points", ephemeral=True)
+            embed = discord.Embed(
+                title="Hackathon Points Balance",
+                color=discord.Color.blue(),
+                timestamp=utc_now()  # Use UTC for embed timestamp
+            )
+            embed.add_field(name="Balance", value=f"{balance:,} Points")
+            embed.set_footer(text=f"Requested by {interaction.user.display_name}")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
@@ -149,44 +159,29 @@ class HackathonEconomy(ExternalEconomyCog):
         except Exception as e:
             await interaction.followup.send(f"Error checking balance: {str(e)}", ephemeral=True)
 
-    @commands.hybrid_command(
-        name="hackathon_leaderboard",
-        description="Show the points leaderboard"
-    )
-    async def leaderboard(self, ctx: commands.Context) -> None:
-        """Show the server's points leaderboard."""
+    @app_commands.guild_only()
+    @app_commands.command(name="hackathon_leaderboard", description="Show the points leaderboard")
+    async def leaderboard(self, interaction: discord.Interaction):
         try:
-            # Get all members with points
             members = []
-            for member in ctx.guild.members:
-                if not member.bot:  # Skip bots
+            for member in interaction.guild.members:
+                if not member.bot:
                     balance = await self.points_service.get_balance(member.id)
                     if balance > 0:
                         members.append((member, balance))
 
-            # Sort by balance
             members.sort(key=lambda x: x[1], reverse=True)
 
             embed = discord.Embed(
-                title="🏆 Points Leaderboard",
-                color=discord.Color.gold()
+                title="🏆 Hackathon Points Leaderboard",
+                color=discord.Color.gold(),
+                timestamp=utc_now()  # Use UTC for embed timestamp
             )
 
-            # Medal emojis for top 3
-            medals = {
-                0: "🥇",
-                1: "🥈",
-                2: "🥉"
-            }
-
-            # Add members to leaderboard
+            medals = {0: "🥇", 1: "🥈", 2: "🥉"}
             leaderboard_text = []
-            for idx, (member, balance) in enumerate(members[:10], 1):
-                if idx <= 3:
-                    prefix = medals[idx-1]
-                else:
-                    prefix = f"`#{idx}`"
-                
+            for idx, (member, balance) in enumerate(members[:10]):
+                prefix = medals.get(idx, f"`#{idx+1}`")
                 leaderboard_text.append(
                     f"{prefix} {member.mention}: **{balance:,}** points"
                 )
@@ -197,11 +192,11 @@ class HackathonEconomy(ExternalEconomyCog):
                 embed.description = "No points recorded yet!"
 
             embed.set_footer(text=f"Total Participants: {len(members)}")
-            await ctx.reply(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
         except Exception as e:
-            await ctx.reply(
-                f"❌ Error fetching leaderboard: {str(e)}",
+            await interaction.response.send_message(
+                f"Error fetching leaderboard: {str(e)}",
                 ephemeral=True
             )
 

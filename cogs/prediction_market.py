@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 import logging
 from services import PredictionMarketService
+from database.models import utc_now, ensure_utc
 
 def is_admin():
     def predicate(interaction: discord.Interaction) -> bool:
@@ -63,7 +64,7 @@ class PredictionMarket(commands.Cog):
                     title="🎲 Prediction Market",
                     description=prediction['question'],
                     color=discord.Color.blue(),
-                    timestamp=prediction['created_at']
+                    timestamp=ensure_utc(prediction['created_at'])
                 )
                 
                 self.logger.debug(f"Getting prices for prediction {prediction['id']}")
@@ -78,7 +79,10 @@ class PredictionMarket(commands.Cog):
                 # Time fields
                 embed.add_field(
                     name="Ends",
-                    value=discord.utils.format_dt(prediction['end_time'], 'R'),
+                    value=discord.utils.format_dt(
+                        ensure_utc(prediction['end_time']),
+                        style='R'
+                    ),
                     inline=True
                 )
                 
@@ -138,7 +142,7 @@ class PredictionMarket(commands.Cog):
                 )
                 return
             
-            # Process duration
+            # Process duration into UTC end time
             duration_parts = duration.split(",")
             if len(duration_parts) != 3:
                 await interaction.followup.send(
@@ -160,7 +164,7 @@ class PredictionMarket(commands.Cog):
                 return
             
             # Calculate end time in UTC
-            end_time = datetime.now(timezone.utc) + timedelta(minutes=total_minutes)
+            end_time = utc_now() + timedelta(minutes=total_minutes)
             
             # Create prediction through service
             prediction = await self.service.create_prediction(
@@ -181,24 +185,27 @@ class PredictionMarket(commands.Cog):
                 duration_parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
             duration_str = ", ".join(duration_parts)
             
-            # Create embed for response
+            # Create embed using Discord's timestamp format
             embed = discord.Embed(
                 title="🎲 New Prediction Market Created",
                 color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
+                timestamp=utc_now()  # Embed timestamp
             )
             embed.add_field(name="Question", value=question, inline=False)
             embed.add_field(name="Options", value="\n".join(options_list), inline=False)
             embed.add_field(name="Duration", value=duration_str, inline=True)
-            embed.add_field(name="Ends", value=f"<t:{int(end_time.timestamp())}:R>", inline=True)
+            # Use Discord's timestamp format for end time
+            embed.add_field(
+                name="Ends",
+                value=discord.utils.format_dt(end_time, style='R'),  # Relative time
+                inline=True
+            )
             if category:
                 embed.add_field(name="Category", value=category, inline=True)
             embed.set_footer(text=f"Created by {interaction.user.display_name}")
             
             await interaction.followup.send(embed=embed)
             
-        except ValueError as e:
-            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
         except Exception as e:
             self.logger.error(f"Error creating prediction: {e}")
             await interaction.followup.send(
@@ -318,7 +325,7 @@ class PredictionSelect(discord.ui.Select):
             options = [
                 discord.SelectOption(
                     label=pred.question[:100],
-                    description=f"Ends {discord.utils.format_dt(pred.end_time, 'R')}",
+                    description=f"Ends {discord.utils.format_dt(ensure_utc(pred.end_time), 'R')}",
                     value=str(pred.id)
                 )
                 for pred in predictions
@@ -557,7 +564,7 @@ class ResolvePredictionSelect(discord.ui.Select):
         options = [
             discord.SelectOption(
                 label=pred.question[:100],
-                description=f"Ended {discord.utils.format_dt(pred.end_time, 'R')}",
+                description=f"Ended {discord.utils.format_dt(ensure_utc(pred.end_time), 'R')}",
                 value=str(pred.id)
             )
             for pred in predictions

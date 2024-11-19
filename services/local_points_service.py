@@ -1,9 +1,9 @@
 """Service for managing Local economy points."""
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import select, func
 from typing import List, Optional, Tuple
-from database.models import Player, Transaction
+from database.models import Player, Transaction, utc_now, ensure_utc
 
 logger = logging.getLogger(__name__)
 
@@ -59,3 +59,43 @@ class LocalPointsService:
     async def cleanup(self):
         """Cleanup any resources."""
         self.logger.info("LocalPointsService cleanup completed")
+    
+    async def get_transactions(self, user_id: str, limit: int = 10) -> List[Transaction]:
+        """Get recent transactions for a user."""
+        try:
+            async with self.db.session() as session:
+                stmt = (
+                    select(Transaction)
+                    .where(Transaction.player_id == user_id)
+                    .order_by(Transaction.timestamp.desc())
+                    .limit(limit)
+                )
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+        except Exception as e:
+            self.logger.error(f"Error getting transactions: {e}")
+            return []
+    
+    async def add_transaction(
+        self,
+        user_id: str,
+        amount: int,
+        from_id: Optional[str] = None,
+        to_id: Optional[str] = None
+    ) -> bool:
+        """Record a new transaction."""
+        try:
+            async with self.db.session() as session:
+                transaction = Transaction(
+                    player_id=user_id,
+                    amount=amount,
+                    from_id=from_id or user_id,
+                    to_id=to_id or user_id,
+                    timestamp=utc_now()  # Ensure UTC timestamp
+                )
+                session.add(transaction)
+                await session.commit()
+                return True
+        except Exception as e:
+            self.logger.error(f"Error adding transaction: {e}")
+            return False
