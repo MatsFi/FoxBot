@@ -85,7 +85,7 @@ class PredictionMarketService:
                     self.logger.error(f"Insufficient {economy} balance: {balance} < {amount}")
                     return False
 
-                # Remove points from external economy
+                # First deduction
                 if not await external_service.remove_points(user_id, amount):
                     self.logger.error(f"Failed to remove points from {economy} economy")
                     return False
@@ -103,9 +103,6 @@ class PredictionMarketService:
                 
                 # Update prediction total bets
                 prediction.total_bets += amount
-                
-                # Deduct points from user
-                await external_service.remove_points(user_id, amount)
                 
                 # Update liquidity pools using AMM formula
                 shares = await self.calculate_shares_for_points(prediction_id, option.id, amount)
