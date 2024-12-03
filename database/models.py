@@ -83,7 +83,8 @@ class PredictionOption(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     prediction_id: Mapped[int] = mapped_column(ForeignKey("predictions.id"))
     text: Mapped[str]
-    liquidity_pool: Mapped[int] = mapped_column(default=100)
+    liquidity_pool: Mapped[int] = mapped_column(default=30000)
+    k_constant: Mapped[int] = mapped_column(default=900000000)
     
     # Relationships
     prediction: Mapped["Prediction"] = relationship(back_populates="options")
