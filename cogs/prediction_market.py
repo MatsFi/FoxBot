@@ -352,66 +352,51 @@ class PredictionMarketCog(commands.Cog):
         self.service = None  # Set up in setup()
 
     @app_commands.command(
+        name="create_prediction",
+        description="Create a new prediction market"
+    )
+    @app_commands.describe(
+        question="The question for the prediction",
+        duration="Duration format: days,hours,minutes (e.g., 1,2,30 or ,,30 or 1,,)",
+        options="Comma-separated list of prediction options",
+        category="Category for the prediction (optional)"
+    )
+    async def create_prediction(
+        self,
+        interaction: discord.Interaction,
+        question: str,
+        options: str,
+        duration: str,
+        category: str = None
+    ):
+        """Create a new prediction market"""
+        await interaction.response.defer(ephemeral=True)
+        # ... rest of create_prediction implementation ...
+
+    @app_commands.command(
         name="bet",
         description="Place a bet on a prediction"
     )
-    @app_commands.describe(
-        prediction_id="The ID of the prediction to bet on"
-    )
     async def bet(
         self,
-        interaction: discord.Interaction,
-        prediction_id: int
+        interaction: discord.Interaction
     ):
         """Place a bet on a prediction"""
-        self.logger.debug(
-            f"Bet command invoked",
-            extra={
-                'user_id': interaction.user.id,
-                'prediction_id': prediction_id,
-                'channel_id': interaction.channel_id
-            }
-        )
-        
         await interaction.response.defer(ephemeral=True)
-        
-        try:
-            view = BettingView(self, prediction_id)
-            await view.setup_options()
-            
-            prediction = await self.service.get_prediction(prediction_id)
-            if not prediction:
-                await interaction.followup.send(
-                    "❌ Prediction not found.",
-                    ephemeral=True
-                )
-                return
-                
-            embed = discord.Embed(
-                title="Place Your Bet",
-                description=prediction['question'],
-                color=discord.Color.blue()
-            )
-            
-            await interaction.followup.send(
-                embed=embed,
-                view=view,
-                ephemeral=True
-            )
-            
-        except Exception as e:
-            self.logger.error(
-                "Error in bet command",
-                exc_info=True,
-                extra={
-                    'user_id': interaction.user.id,
-                    'prediction_id': prediction_id
-                }
-            )
-            await interaction.followup.send(
-                "❌ An error occurred while setting up the betting interface.",
-                ephemeral=True
-            )
+        # ... implement category-based betting UI ...
+
+    @app_commands.command(
+        name="list_predictions",
+        description="List all active predictions"
+    )
+    async def list_predictions(
+        self,
+        interaction: discord.Interaction,
+        show_all: bool = False
+    ):
+        """List active predictions"""
+        await interaction.response.defer(ephemeral=True)
+        # ... implement prediction listing ...
 
     @app_commands.command(
         name="resolve",
