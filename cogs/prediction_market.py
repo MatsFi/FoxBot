@@ -511,3 +511,7 @@ class PredictionMarketCog(commands.Cog):
                 "❌ An error occurred while processing your command.",
                 ephemeral=True
             )
+
+async def setup(bot):
+    """Set up the prediction market cog"""
+    await bot.add_cog(PredictionMarketCog(bot))

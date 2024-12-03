@@ -24,20 +24,13 @@ def setup_logger(name: str, log_file: str = None) -> logging.Logger:
     logger.setLevel(logging.INFO)
     logger.propagate = False
     
-    # Add prediction market context filter
-    logger.addFilter(PredictionMarketFilter())
-    
     # Create console handler with colored formatting
     console_handler = colorlog.StreamHandler()
     console_handler.setLevel(logging.INFO)
     
-    # Create colored formatter with context
+    # Create colored formatter
     color_formatter = colorlog.ColoredFormatter(
-        "%(asctime)s - %(log_color)s%(levelname)-8s%(reset)s - %(message)s"
-        "%(if_user_id)s [user:%(user_id)s]%(end_if)s"
-        "%(if_prediction_id)s [pred:%(prediction_id)s]%(end_if)s"
-        "%(if_channel_id)s [channel:%(channel_id)s]%(end_if)s"
-        "%(if_economy)s [economy:%(economy)s]%(end_if)s",
+        "%(asctime)s - %(log_color)s%(levelname)-8s%(reset)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         reset=True,
         log_colors={
@@ -62,16 +55,10 @@ def setup_logger(name: str, log_file: str = None) -> logging.Logger:
             encoding="utf-8",
             mode="a"
         )
-        # Detailed formatter for file logs
-        file_formatter = logging.Formatter(
-            "%(asctime)s - %(levelname)s - %(message)s"
-            "%(if_user_id)s [user:%(user_id)s]%(end_if)s"
-            "%(if_prediction_id)s [pred:%(prediction_id)s]%(end_if)s"
-            "%(if_channel_id)s [channel:%(channel_id)s]%(end_if)s"
-            "%(if_economy)s [economy:%(economy)s]%(end_if)s",
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        file_handler.setFormatter(file_formatter)
+        ))
         logger.addHandler(file_handler)
     
     return logger 
