@@ -1,4 +1,5 @@
 """SQLAlchemy models for the database."""
+from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Optional, Dict
 from sqlalchemy import ForeignKey, JSON, String, Integer, Float, Boolean
@@ -50,32 +51,30 @@ class Prediction(Base):
     __tablename__ = 'predictions'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    question: Mapped[str] = mapped_column(String, nullable=False)
-    end_time: Mapped[datetime] = mapped_column(nullable=False)
-    creator_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    refunded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    question: Mapped[str]
+    end_time: Mapped[datetime]
+    creator_id: Mapped[int]
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    refunded: Mapped[bool] = mapped_column(Boolean, default=False)
+    category: Mapped[Optional[str]]
     
     # New fields for liquidity management
-    initial_liquidity: Mapped[int] = mapped_column(Integer, default=30000, nullable=False)
-    liquidity_pool: Mapped[Dict] = mapped_column(JSON, default=dict, nullable=False)
-    k_constant: Mapped[float] = mapped_column(Float, nullable=False)
+    initial_liquidity: Mapped[int] = mapped_column(Integer, default=30000)
+    liquidity_pool: Mapped[Dict] = mapped_column(JSON, default=dict)
+    k_constant: Mapped[float]
     
     # New fields for voting
-    user_votes: Mapped[Dict] = mapped_column(JSON, default=dict, nullable=False)
-    votes_per_option: Mapped[Dict] = mapped_column(JSON, default=dict, nullable=False)
+    user_votes: Mapped[Dict] = mapped_column(JSON, default=dict)
+    votes_per_option: Mapped[Dict] = mapped_column(JSON, default=dict)
     
-    # Relationships with explicit join conditions and back references
+    # Relationships
     options: Mapped[List["PredictionOption"]] = relationship(
         back_populates="prediction",
-        cascade="all, delete-orphan",
-        lazy="selectin"
+        cascade="all, delete-orphan"
     )
     bets: Mapped[List["Bet"]] = relationship(
         back_populates="prediction",
-        cascade="all, delete-orphan",
-        lazy="selectin"
+        cascade="all, delete-orphan"
     )
 
     def __init__(self, **kwargs) -> None:
@@ -102,16 +101,14 @@ class PredictionOption(Base):
         ForeignKey("predictions.id", ondelete="CASCADE"),
         nullable=False
     )
-    text: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str]
     
-    prediction: Mapped["Prediction"] = relationship(
-        back_populates="options",
-        lazy="selectin"
+    prediction: Mapped[Prediction] = relationship(
+        back_populates="options"
     )
     bets: Mapped[List["Bet"]] = relationship(
         back_populates="option",
-        cascade="all, delete-orphan",
-        lazy="selectin"
+        cascade="all, delete-orphan"
     )
 
 class Bet(Base):
@@ -129,16 +126,14 @@ class Bet(Base):
         ForeignKey("prediction_options.id", ondelete="CASCADE"),
         nullable=False
     )
-    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    amount: Mapped[int] = mapped_column(Integer, nullable=False)
-    shares: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
-    economy: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[int]
+    amount: Mapped[int]
+    shares: Mapped[float] = mapped_column(Float, default=0.0)
+    economy: Mapped[str]
     
-    prediction: Mapped["Prediction"] = relationship(
-        back_populates="bets",
-        lazy="selectin"
+    prediction: Mapped[Prediction] = relationship(
+        back_populates="bets"
     )
-    option: Mapped["PredictionOption"] = relationship(
-        back_populates="bets",
-        lazy="selectin"
+    option: Mapped[PredictionOption] = relationship(
+        back_populates="bets"
     )

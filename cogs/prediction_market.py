@@ -177,6 +177,57 @@ class PredictionMarket(commands.Cog):
                 ephemeral=True
             )
 
+    @app_commands.command(name="bet")
+    async def place_bet(
+        self,
+        interaction: discord.Interaction,
+        prediction_id: int,
+        option_id: int,
+        amount: int
+    ):
+        """Place a bet on a prediction."""
+        await interaction.response.defer()
+        
+        success, message, bet = await self.service.place_bet(
+            prediction_id=prediction_id,
+            option_id=option_id,
+            user_id=interaction.user.id,
+            amount=amount,
+            economy="local"  # Default to local economy for now
+        )
+        
+        if success:
+            await interaction.followup.send(f"✅ {message}")
+        else:
+            await interaction.followup.send(f"❌ {message}")
+
+    @app_commands.command(name="resolve_prediction")
+    async def resolve_prediction(
+        self,
+        interaction: discord.Interaction,
+        prediction_id: int,
+        winning_option_id: int
+    ):
+        """Resolve a prediction market."""
+        await interaction.response.defer()
+        
+        success, message, payouts = await self.service.resolve_market(
+            prediction_id=prediction_id,
+            winning_option_id=winning_option_id,
+            resolver_id=interaction.user.id
+        )
+        
+        if success:
+            payout_msg = "\n".join([
+                f"<@{user_id}> won {amount} {economy} points!"
+                for user_id, amount, economy in payouts
+            ])
+            await interaction.followup.send(
+                f"✅ {message}\n\n{payout_msg if payouts else 'No winning bets.'}"
+            )
+        else:
+            await interaction.followup.send(f"❌ {message}")
+
 async def setup(bot):
     """Set up the prediction market cog."""
     logger = bot.logger.getChild('prediction_market')
