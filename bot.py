@@ -111,7 +111,7 @@ class DiscordBot(commands.Bot):
             # THEN initialize prediction market service
             self.logger.info("Initializing prediction market service...")
             self.prediction_market_service = PredictionMarketService.from_bot(self)
-            await self.prediction_market_service.start()
+            await self.prediction_market_service.initialize()
 
             # Sync commands with Discord
             self.logger.info("Syncing application commands...")

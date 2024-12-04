@@ -1,150 +1,193 @@
-# Low Poly Market Discord Bot
+# FoxBot Discord Bot
 
-A Discord bot featuring a prediction market system that integrates with multiple external token economies.
-
-## Overview
-
-Low Poly Market implements a sophisticated prediction market system allowing users to bet tokens from various external economies on user-created predictions. The system is designed with strict separation of concerns, robust error handling, and follows a service-oriented architecture.
-
-## Core Features
-
-- Prediction Market System with automated resolution
-- Real-time Market Updates
-- Automated Notifications
-- Multiple External Economy Integration
-- Interactive Discord UI
-- Comprehensive Logging System
+A Discord bot featuring a sophisticated prediction market system that integrates with multiple token economies. The system follows a service-oriented architecture with clear separation of concerns.
 
 ## System Architecture
 
 ### Component Overview
-- **Bot Core**: Central coordinator and service manager
-- **Economy System**: Handles token management across economies
-- **Prediction Market**: Manages betting markets and resolutions
-- **Transfer Service**: Coordinates all token movements
-- **Database Layer**: Persistent storage using SQLAlchemy 2.0
+```plaintext
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│     Discord     │     │    FoxBot UI    │     │  Business Logic │
+│   Interactions  │────▶│      Layer      │────▶│     Services    │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+                               │                         │
+                               │                         │
+                        ┌─────────────────┐     ┌─────────────────┐
+                        │   Transfer &    │     │    Database     │
+                        │ Economy Service │◀───▶│      Layer      │
+                        └─────────────────┘     └─────────────────┘
+```
 
-### Service Layer
-- **Transfer Service**: Central hub for all token movements
-- **Local Points Service**: Internal economy management
-- **External Economy Services**: External token system interfaces
-- **Prediction Market Service**: Market logic and resolution handling
+### Project Structure
+```plaintext
+FoxBot/
+├── bot.py                         # Main entry point and initialization
+├── cogs/
+│   ├── prediction_market.py       # Command handlers and coordination
+│   ├── local_economy.py          # Local economy command handlers
+│   ├── hackathon_economy.py      # External economy integration
+│   └── views/                    # UI Components
+│       ├── prediction_market_views.py  # Market display
+│       ├── betting_views.py           # Betting interface
+│       └── resolution_views.py        # Resolution interface
+├── services/
+│   ├── transfer_service.py       # Central token movement handler
+│   ├── local_points.py          # Local economy service
+│   └── prediction_market.py      # Market business logic
+└── database/
+    ├── models.py                # SQLAlchemy models
+    └── database.py             # Database connection handling
+```
 
-### Cog Layer
-- **Local Economy Cog**: Core economy initialization
-- **External Economy Cogs**: External economy interfaces
-- **Prediction Market Cog**: User interface and command handling
+## Component Responsibilities
 
-## Initialization Sequence
+### Cogs Layer
+- **Purpose**: Handle Discord commands and coordinate between UI and services
+- **Responsibilities**:
+  - Command registration and handling
+  - Input validation
+  - User permission checks
+  - Error handling and user feedback
+  - Coordination between UI and services
 
-1. Bot Startup
-   - Database connection establishment
-   - Service initialization
-   - Cog loading in specified order
+### Views Layer
+- **Purpose**: Manage UI components and user interactions
+- **Responsibilities**:
+  - Market display and updates
+  - Betting interface
+  - Resolution interface
+  - Auto-updating displays
+  - User interaction handling
 
-2. Service Initialization Order
-   - Local Economy (initializes transfer service)
-   - External Economies (register with transfer service)
-   - Prediction Market (uses registered economies)
+### Services Layer
+- **Purpose**: Implement business logic and manage data operations
+- **Components**:
+  1. **Transfer Service**
+     - Central authority for token movements
+     - Validates and executes transfers
+     - Maintains transaction history
+  
+  2. **Prediction Market Service**
+     - Market creation and management
+     - Bet placement and resolution
+     - Price calculations
+     - Liquidity management
+  
+  3. **Economy Services**
+     - Token balance management
+     - Economy-specific operations
+     - Integration with external systems
 
-3. Command Registration
-   - Slash command synchronization
-   - View registration
-   - Event handler setup
+### Database Layer
+- **Purpose**: Data persistence and model definitions
+- **Components**:
+  - SQLAlchemy models
+  - Database connection management
+  - Transaction handling
 
-## Core Design Principles
+## Data Flow
 
-### Golden Rules
-1. **Transfer Service Sovereignty**
-   - All token movements MUST go through the Transfer Service
-   - Services never directly modify token balances
-   - Always adapt to Transfer Service interfaces, never modify them
+### Betting Flow
+```plaintext
+User ─┐
+      │    ┌───────────┐    ┌──────────┐    ┌─────────────┐
+      ├───▶│   View    │───▶│   Cog    │───▶│  PM Service │
+      │    └───────────┘    └──────────┘    └─────────────┘
+      │                                            │
+      │    ┌───────────┐    ┌──────────┐          │
+      └───▶│ Transfer  │◀───│ Database │◀─────────┘
+           │  Service  │    │  Layer   │
+           └───────────┘    └──────────┘
+```
 
-2. **Economy Separation**
-   - Local economy cannot participate in prediction markets
-   - External economies must register with Transfer Service
-   - Prediction Market only accepts external economy tokens
+### Market Resolution Flow
+```plaintext
+Creator ──┐
+          │    ┌───────────┐    ┌──────────┐    ┌─────────────┐
+          ├───▶│   View    │───▶│   Cog    │───▶│  PM Service │
+          │    └───────────┘    └──────────┘    └─────────────┘
+          │                                            │
+          │    ┌───────────┐    ┌──────────┐          │
+          └───▶│ Transfer  │◀───│ Database │◀─────────┘
+               │  Service  │    │  Layer   │
+               └───────────┘    └──────────┘
+```
 
-3. **Error Handling**
-   - Graceful degradation on failures
-   - Comprehensive logging at all levels
+## Best Practices
+
+### Code Organization
+1. **Separation of Concerns**
+   - UI logic stays in views
+   - Business logic in services
+   - Database operations in models
+   - Command handling in cogs
+
+2. **Error Handling**
+   - Comprehensive try/except blocks
+   - Proper error logging
    - User-friendly error messages
+   - Transaction rollback on failure
 
-### Best Practices
+3. **Type Safety**
+   - Use type hints
+   - Validate inputs
+   - Document return types
+   - Use SQLAlchemy 2.0 typing
 
-1. **Service Communication**
-   ```python
-   # CORRECT: Use Transfer Service interface
-   await self.transfer_service.deposit_to_local(...)
-   
-   # INCORRECT: Direct service-to-service calls
-   await external_service.remove_points(...)
-   ```
+### Database Operations
+1. **Session Management**
+   - Use async sessions
+   - Proper transaction handling
+   - Session cleanup
+   - Error recovery
 
-2. **Economy Management**
-   ```python
-   # Get available economies from transfer service
-   external_economies = list(self.bot.transfer_service._external_services.keys())
-   ```
+2. **Query Optimization**
+   - Use eager loading when appropriate
+   - Minimize database calls
+   - Index frequently queried fields
+   - Monitor query performance
 
-3. **Error Handling**
-   ```python
-   try:
-       await self.process_transaction(...)
-   except TransferError as e:
-       self.logger.error(f"Transfer failed: {e}")
-       await self.notify_user(...)
-   ```
+### UI Components
+1. **View Management**
+   - Timeout handling
+   - Resource cleanup
+   - Auto-update management
+   - Error recovery
 
-## Detailed Implementation Guidelines
-
-### Adding New External Economies
-1. Create economy service implementing standard interface
-2. Create economy cog that registers with Transfer Service
-3. Add to cog_load_order in bot.py
-4. Economy automatically becomes available for prediction markets
-
-### Transaction Flow
-1. User initiates action (bet, resolution)
-2. Service validates request
-3. Transfer Service handles token movement
-4. Database updates transaction record
-5. User notification sent
-
-### Notification System
-- Automated notifications for:
-  - Market creation
-  - Betting period end
-  - Market resolution
-  - Payout distribution
-  - Error conditions
-
-### Logging Strategy
-- DEBUG: Detailed flow information
-- INFO: Major state changes
-- WARNING: Recoverable issues
-- ERROR: Critical failures
-- Include relevant context in log messages
+2. **User Experience**
+   - Clear feedback
+   - Consistent styling
+   - Responsive updates
+   - Intuitive interactions
 
 ## Development Guidelines
 
-### Code Style
-- Use type hints
-- Document public methods
-- Include error handling
-- Log meaningful events
-- Follow PEP 8
+### Adding New Features
+1. Plan the feature across all layers
+2. Update models if needed
+3. Implement service layer logic
+4. Create or update UI components
+5. Add command handlers
+6. Update documentation
 
 ### Testing Requirements
-- Unit tests for services
-- Integration tests for cogs
-- Mock external services
-- Test error conditions
-- Verify logging output
+1. Unit tests for services
+2. Integration tests for cogs
+3. UI component testing
+4. Database operation testing
+5. Error handling verification
 
-### Deployment Considerations
-- Environment configuration
-- Database migrations
-- Discord permissions
-- External service credentials
-- Logging setup
+### Documentation Standards
+1. Clear method documentation
+2. Type hints and return types
+3. Example usage
+4. Error scenarios
+5. Architecture updates
+
+## Golden Rules
+1. All token movements MUST go through Transfer Service
+2. Always use proper error handling
+3. Maintain separation of concerns
+4. Document all changes
+5. Test thoroughly
+6. Follow established patterns

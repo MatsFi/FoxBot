@@ -1,7 +1,7 @@
 """SQLAlchemy models for the database."""
 from datetime import datetime, timezone
-from typing import List, Optional
-from sqlalchemy import Column, Integer, Boolean, String, Text, DateTime, ForeignKey, JSON
+from typing import List, Optional, Dict
+from sqlalchemy import ForeignKey, JSON, String, Integer, Float, Boolean
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from .database import Base
 
@@ -49,60 +49,96 @@ class Prediction(Base):
     """Model for prediction markets."""
     __tablename__ = 'predictions'
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    question: Mapped[str]
-    category: Mapped[Optional[str]]
-    creator_id: Mapped[int]  # Discord user ID
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
-    end_time: Mapped[datetime]  # Stored in UTC
-    resolved: Mapped[bool] = mapped_column(default=False)
-    refunded: Mapped[bool] = mapped_column(default=False)
-    result: Mapped[Optional[str]]  # Winning option text
-    total_bets: Mapped[int] = mapped_column(default=0)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    question: Mapped[str] = mapped_column(String, nullable=False)
+    end_time: Mapped[datetime] = mapped_column(nullable=False)
+    creator_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    refunded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     
-    # Relationships
+    # New fields for liquidity management
+    initial_liquidity: Mapped[int] = mapped_column(Integer, default=30000, nullable=False)
+    liquidity_pool: Mapped[Dict] = mapped_column(JSON, default=dict, nullable=False)
+    k_constant: Mapped[float] = mapped_column(Float, nullable=False)
+    
+    # New fields for voting
+    user_votes: Mapped[Dict] = mapped_column(JSON, default=dict, nullable=False)
+    votes_per_option: Mapped[Dict] = mapped_column(JSON, default=dict, nullable=False)
+    
+    # Relationships with explicit join conditions and back references
     options: Mapped[List["PredictionOption"]] = relationship(
         back_populates="prediction",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
+        lazy="selectin"
     )
     bets: Mapped[List["Bet"]] = relationship(
         back_populates="prediction",
-        cascade="all, delete-orphan"
+        cascade="all, delete-orphan",
+        lazy="selectin"
     )
 
-    def __init__(self, **kwargs):
-        """Ensure end_time is UTC timezone-aware."""
-        if 'end_time' in kwargs:
-            kwargs['end_time'] = ensure_utc(kwargs['end_time'])
+    def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.k_constant = float(self.initial_liquidity * self.initial_liquidity)
+        if hasattr(self, 'options'):
+            self.liquidity_pool = {
+                opt.text: self.initial_liquidity 
+                for opt in self.options
+            }
+            self.votes_per_option = {
+                opt.text: [] 
+                for opt in self.options
+            }
+        self.user_votes = {}
 
 class PredictionOption(Base):
     """Model for prediction market options."""
     __tablename__ = "prediction_options"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    prediction_id: Mapped[int] = mapped_column(ForeignKey("predictions.id"))
-    text: Mapped[str]
-    liquidity_pool: Mapped[int] = mapped_column(default=30000)
-    k_constant: Mapped[int] = mapped_column(default=900000000)
-    total_bet_amount: Mapped[int] = mapped_column(default=0)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    prediction_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("predictions.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    text: Mapped[str] = mapped_column(String, nullable=False)
     
-    # Relationships
-    prediction: Mapped["Prediction"] = relationship(back_populates="options")
-    bets: Mapped[List["Bet"]] = relationship(back_populates="option")
+    prediction: Mapped["Prediction"] = relationship(
+        back_populates="options",
+        lazy="selectin"
+    )
+    bets: Mapped[List["Bet"]] = relationship(
+        back_populates="option",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
 
 class Bet(Base):
     """Model for tracking prediction market bets."""
     __tablename__ = "bets"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    prediction_id: Mapped[int] = mapped_column(ForeignKey("predictions.id"))
-    option_id: Mapped[int] = mapped_column(ForeignKey("prediction_options.id"))
-    user_id: Mapped[int]  # Discord snowflake ID
-    amount: Mapped[int]
-    economy: Mapped[str]  # Track which economy the bet is from
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    prediction_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("predictions.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    option_id: Mapped[int] = mapped_column(
+        Integer, 
+        ForeignKey("prediction_options.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    shares: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    economy: Mapped[str] = mapped_column(String, nullable=False)
     
-    # Relationships
-    prediction: Mapped["Prediction"] = relationship(back_populates="bets")
-    option: Mapped["PredictionOption"] = relationship(back_populates="bets")
+    prediction: Mapped["Prediction"] = relationship(
+        back_populates="bets",
+        lazy="selectin"
+    )
+    option: Mapped["PredictionOption"] = relationship(
+        back_populates="bets",
+        lazy="selectin"
+    )
