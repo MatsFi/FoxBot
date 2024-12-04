@@ -47,17 +47,7 @@ class CrossEconomyTransferService:
         amount: int,
         username: str
     ) -> TransferResult:
-        """Transfer points from any external economy to local.
-        
-        Args:
-            economy_name (str): Name of the source economy
-            discord_id (str): User's Discord ID
-            amount (int): Amount to transfer
-            username (str): User's Discord username
-            
-        Returns:
-            TransferResult: Result of the transfer operation
-        """
+        """Transfer points from any external economy to local."""
         try:
             external_service = self.get_external_service(economy_name)
             
@@ -66,12 +56,11 @@ class CrossEconomyTransferService:
                 f"Starting deposit to local from {economy_name}: {discord_id}, amount: {amount}"
             )
             
-            # Get initial balances
+            # Only check external balance since we're moving FROM external TO local
             initial_external = await external_service.get_balance(int(discord_id))
-            initial_local = await self.local_service.get_balance(discord_id, username)
             
             self.logger.info(
-                f"Current balances - {economy_name}: {initial_external}, Local: {initial_local}"
+                f"Current external balance in {economy_name}: {initial_external}"
             )
             
             # Verify external balance
@@ -79,71 +68,47 @@ class CrossEconomyTransferService:
                 return TransferResult(
                     success=False,
                     message=f"Insufficient {economy_name} balance. You have {initial_external:,} points.",
-                    initial_external_balance=initial_external,
-                    initial_local_balance=initial_local
+                    initial_external_balance=initial_external
                 )
 
-            # Add to Local economy first
-            local_success = await self.local_service.add_points(
-                discord_id,
-                amount,
-                f"Deposit from {economy_name} economy (ID: {discord_id})",
-                username
+            # Add transaction to Local economy first
+            local_success = await self.local_service.add_transaction(
+                user_id=username,  # This will be the prediction market account
+                amount=amount,
+                from_id=f"{economy_name}_{discord_id}",  # Source of funds
+                to_id=username  # Destination (prediction market account)
             )
             
             if not local_success:
                 return TransferResult(
                     success=False,
-                    message="Failed to credit Local economy",
-                    initial_external_balance=initial_external,
-                    initial_local_balance=initial_local
-                )
-
-            # Verify Local credit
-            new_local = await self.local_service.get_balance(discord_id, username)
-            if new_local != initial_local + amount:
-                # Rollback local change
-                await self.local_service.add_points(
-                    discord_id,
-                    -amount,
-                    f"Rollback failed {economy_name} deposit",
-                    username
-                )
-                return TransferResult(
-                    success=False,
-                    message="Local economy credit verification failed",
-                    initial_external_balance=initial_external,
-                    initial_local_balance=initial_local
+                    message="Failed to credit Local economy"
                 )
 
             # Remove from external economy
             external_success = await external_service.remove_points(int(discord_id), amount)
             if not external_success:
-                # Rollback Local credit
-                await self.local_service.add_points(
-                    discord_id,
-                    -amount,
-                    f"Rollback due to {economy_name} debit failure",
-                    username
+                # Rollback Local credit by adding a negative transaction
+                await self.local_service.add_transaction(
+                    user_id=username,
+                    amount=-amount,
+                    from_id=username,
+                    to_id=f"{economy_name}_{discord_id}"
                 )
                 return TransferResult(
                     success=False,
                     message=f"Failed to debit {economy_name} economy. Transaction rolled back.",
-                    initial_external_balance=initial_external,
-                    initial_local_balance=initial_local
+                    initial_external_balance=initial_external
                 )
 
-            # Final verification
+            # Get final external balance for verification
             final_external = await external_service.get_balance(int(discord_id))
-            final_local = await self.local_service.get_balance(discord_id, username)
             
             return TransferResult(
                 success=True,
                 message="Transfer successful",
                 initial_external_balance=initial_external,
-                initial_local_balance=initial_local,
-                final_external_balance=final_external,
-                final_local_balance=final_local
+                final_external_balance=final_external
             )
 
         except Exception as e:

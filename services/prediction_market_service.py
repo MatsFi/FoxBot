@@ -1,10 +1,12 @@
-from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Dict
-from sqlalchemy import select, func
+from datetime import datetime, timezone
+from typing import List, Optional, Dict, Any
+from sqlalchemy import select, func, and_, not_
 from sqlalchemy.orm import selectinload
 from database.models import Prediction, PredictionOption, Bet, utc_now, ensure_utc
 import logging
 import discord
+import asyncio
+from sqlalchemy.ext.asyncio import AsyncSession
 
 class PredictionMarketError(Exception):
     """Base exception class for prediction market errors"""
@@ -31,9 +33,9 @@ class PredictionMarketService:
             bot=bot
         )
 
-    def __init__(self, session_factory, bot):
-        self.session_factory = session_factory
+    def __init__(self, bot, session_factory):
         self.bot = bot
+        self.session_factory = session_factory
         self.logger = logging.getLogger(__name__)
         self._market_balance = {}
         self._running = False
@@ -51,11 +53,7 @@ class PredictionMarketService:
         amount: int,
         economy: str
     ) -> tuple[bool, Optional[str]]:
-        """Validate bet parameters before placement.
-        
-        Returns:
-            tuple[bool, Optional[str]]: (is_valid, error_message)
-        """
+        """Validate bet parameters before placement."""
         try:
             # Validate amount
             if not isinstance(amount, int) or amount <= 0:
@@ -66,14 +64,19 @@ class PredictionMarketService:
                 return False, f"Invalid economy. Must be one of: {', '.join(self.available_economies)}"
 
             async with self.session_factory() as session:
-                # Get prediction with options
                 prediction = await self._get_prediction_for_bet(session, prediction_id)
+                if not prediction:
+                    return False, "Prediction not found"
                 
                 # Validate prediction state
                 if prediction.resolved:
                     return False, "This prediction has already been resolved"
                 
-                if prediction.end_time <= utc_now():
+                # Ensure both datetimes are UTC aware before comparison
+                prediction_end = ensure_utc(prediction.end_time)
+                current_time = utc_now()
+                
+                if prediction_end <= current_time:
                     return False, "This prediction has expired"
 
                 # Validate option
@@ -81,16 +84,11 @@ class PredictionMarketService:
                 if option_text not in valid_options:
                     return False, f"Invalid option. Must be one of: {', '.join(valid_options)}"
 
-                # Check liquidity
-                option = next(opt for opt in prediction.options if opt.text == option_text)
-                if option.liquidity_pool < amount:
-                    return False, "Insufficient liquidity for this bet size"
-
                 return True, None
 
         except Exception as e:
             self.logger.error(
-                "Error validating bet",
+                f"Error validating bet: {str(e)}",
                 exc_info=True,
                 extra={
                     'prediction_id': prediction_id,
@@ -103,130 +101,258 @@ class PredictionMarketService:
     async def place_bet(
         self,
         prediction_id: int,
-        option_text: str,
+        option_id: int,
         user_id: int,
         amount: int,
-        economy: str
-    ) -> tuple[bool, Optional[str]]:
-        """Place a bet with validation"""
-        log_context = {
-            'user_id': user_id,
-            'prediction_id': prediction_id,
-            'economy': economy
-        }
-        
-        try:
-            # Validate bet parameters
-            is_valid, error_message = await self.validate_bet(
-                prediction_id,
-                option_text,
-                amount,
-                economy
-            )
-            
-            if not is_valid:
-                return False, error_message
+        economy: str = "points"
+    ) -> bool:
+        """Place a bet on a prediction option."""
+        async with self.session_factory() as session:
+            try:
+                self.logger.debug(
+                    f"Starting bet placement - User: {user_id}, "
+                    f"Prediction: {prediction_id}, Option: {option_id}, "
+                    f"Amount: {amount}, Economy: {economy}"
+                )
 
-            # Proceed with bet placement
-            self.logger.info(
-                f"Placing validated bet: {amount} points on {option_text}",
-                extra=log_context
-            )
-            
-            async with self.session_factory() as session:
-                async with session.begin():
-                    prediction = await self._get_prediction_for_bet(session, prediction_id)
-                    
-                    # Validate market state
-                    if prediction.resolved:
-                        raise MarketStateError("This prediction has already been resolved")
-                    
-                    if prediction.end_time <= utc_now():
-                        raise MarketStateError("This prediction has expired")
+                # Fetch the prediction and option with eager loading
+                prediction = await session.execute(
+                    select(Prediction)
+                    .options(selectinload(Prediction.options))
+                    .where(Prediction.id == prediction_id)
+                )
+                prediction = prediction.scalar_one_or_none()
+                
+                if not prediction:
+                    raise InvalidBetError("Prediction not found.")
 
-                    # Validate option
-                    option = next(
-                        (opt for opt in prediction.options if opt.text == option_text),
-                        None
+                option = next((o for o in prediction.options if o.id == option_id), None)
+                if not option:
+                    raise InvalidBetError("Option not found.")
+
+                # Generate prediction market account ID
+                prediction_account = f"prediction_{prediction_id}"
+                self.logger.debug(f"Using prediction market account: {prediction_account}")
+
+                # Transfer points from external economy directly to prediction market account
+                transfer_result = await self.bot.transfer_service.deposit_to_local(
+                    economy_name=economy,
+                    discord_id=str(user_id),  # Source of funds
+                    amount=amount,
+                    username=prediction_account  # Destination account
+                )
+
+                if not transfer_result.success:
+                    self.logger.debug(
+                        f"Transfer failed - User: {user_id}, "
+                        f"Amount: {amount}, Error: {transfer_result.message}"
                     )
-                    if not option:
-                        raise InvalidBetError("Invalid option selected")
+                    raise InsufficientLiquidityError(transfer_result.message)
 
-                    # Check liquidity
-                    if option.liquidity_pool < amount:
-                        raise InsufficientLiquidityError(
-                            "Insufficient liquidity for this bet size"
+                self.logger.debug(
+                    f"Transfer successful - {amount} points moved from "
+                    f"{user_id} to {prediction_account}"
+                )
+
+                # Create and add the bet record
+                bet = Bet(
+                    user_id=user_id,
+                    prediction_id=prediction_id,
+                    option_id=option_id,
+                    amount=amount,
+                    economy=economy
+                )
+                session.add(bet)
+
+                # Update the option's total bet amount
+                option.total_bet_amount += amount
+                session.add(option)
+
+                await session.commit()
+
+                self.logger.debug(
+                    f"Bet placement complete - User: {user_id}, "
+                    f"Prediction: {prediction_id}, Option: {option_id}"
+                )
+                return True
+
+            except Exception as e:
+                self.logger.error(f"Error placing bet: {str(e)}", exc_info=True)
+                # If we need to refund, use withdraw_to_external
+                if 'transfer_result' in locals() and transfer_result.success:
+                    self.logger.debug(
+                        f"Attempting to refund {amount} points to {user_id} "
+                        f"from {prediction_account}"
+                    )
+                    try:
+                        refund_result = await self.bot.transfer_service.withdraw_to_external(
+                            economy_name=economy,
+                            discord_id=prediction_account,  # Source (prediction market)
+                            amount=amount,
+                            username=str(user_id)  # Destination (user)
                         )
+                        if not refund_result.success:
+                            self.logger.error(
+                                f"Failed to refund bet: {refund_result.message}"
+                            )
+                    except Exception as refund_error:
+                        self.logger.error(
+                            f"Error refunding bet: {str(refund_error)}", 
+                            exc_info=True
+                        )
+                raise
 
-                    # Process bet
-                    return await self._process_bet(
-                        session, prediction, option, user_id, amount, economy
-                    )
-
-        except Exception as e:
-            self.logger.error(
-                "Error placing bet",
-                exc_info=True,
-                extra=log_context
-            )
-            return False, "An error occurred while placing your bet"
-
-    async def _get_prediction_for_bet(self, session, prediction_id: int) -> Prediction:
-        """Get prediction with validation"""
-        stmt = (
-            select(Prediction)
-            .options(selectinload(Prediction.options))
-            .where(Prediction.id == prediction_id)
+    async def resolve_prediction(self, prediction_id: int, winning_option_id: int) -> bool:
+        """Resolve a prediction and process payouts."""
+        self.logger.debug(
+            f"Starting prediction resolution - Prediction: {prediction_id}, "
+            f"Winning Option: {winning_option_id}"
         )
-        result = await session.execute(stmt)
-        prediction = result.scalar_one_or_none()
         
-        if not prediction:
-            raise InvalidBetError("Prediction not found")
-            
-        return prediction
+        async with self.session_factory() as session:
+            try:
+                prediction = await session.execute(
+                    select(Prediction)
+                    .options(
+                        selectinload(Prediction.options),
+                        selectinload(Prediction.bets)
+                    )
+                    .where(Prediction.id == prediction_id)
+                )
+                prediction = prediction.scalar_one_or_none()
+
+                if not prediction:
+                    self.logger.error(f"Prediction {prediction_id} not found")
+                    return False
+
+                # Calculate pools
+                total_pool = sum(bet.amount for bet in prediction.bets)
+                winning_pool = sum(
+                    bet.amount for bet in prediction.bets 
+                    if bet.option_id == winning_option_id
+                )
+
+                prediction_account = f"prediction_{prediction_id}"
+
+                # Process payouts for winning bets
+                for bet in prediction.bets:
+                    if bet.option_id == winning_option_id and winning_pool > 0:
+                        payout_ratio = total_pool / winning_pool
+                        payout_amount = int(bet.amount * payout_ratio)
+                        
+                        try:
+                            # Add points to external economy first
+                            external_success = await self.bot.transfer_service.get_external_service(
+                                bet.economy
+                            ).add_points(bet.user_id, payout_amount)
+                            
+                            if not external_success:
+                                self.logger.error(
+                                    f"Failed to transfer winnings - User: {bet.user_id}, "
+                                    f"Amount: {payout_amount}"
+                                )
+                                continue
+
+                            self.logger.debug(
+                                f"Successfully paid out {payout_amount} to user {bet.user_id}"
+                            )
+
+                        except Exception:
+                            self.logger.error(
+                                f"Error processing payout - User: {bet.user_id}, "
+                                f"Amount: {payout_amount}",
+                                exc_info=True
+                            )
+                            continue
+
+                # Mark prediction as resolved
+                prediction.resolved = True
+                prediction.winning_option_id = winning_option_id
+                await session.commit()
+
+                self.logger.debug(f"Successfully resolved prediction {prediction_id}")
+                return True
+
+            except Exception:
+                self.logger.error(
+                    f"Error resolving prediction {prediction_id}",
+                    exc_info=True
+                )
+                await session.rollback()
+                return False
+
+    async def _get_prediction_for_bet(self, session, prediction_id: int) -> Optional[Prediction]:
+        """Internal method to get prediction with relationships for betting."""
+        stmt = select(Prediction).options(
+            selectinload(Prediction.options),
+            selectinload(Prediction.bets)
+        ).where(Prediction.id == prediction_id)
+        
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def _process_bet(
         self,
-        session,
+        session: AsyncSession,
         prediction: Prediction,
         option: PredictionOption,
         user_id: int,
         amount: int,
-        economy: str
-    ) -> tuple[bool, Optional[str]]:
-        """Process bet placement with error handling"""
+        economy: str = "points"
+    ) -> bool:
+        """Process a bet on a prediction option."""
         try:
-            # Deduct points first
-            if not await self._deduct_points(user_id, amount, economy):
-                return False, "Failed to process payment"
-
+            # Create bet
+            bet = Bet(
+                user_id=user_id,
+                amount=amount,
+                economy=economy,
+                option=option
+            )
+            session.add(bet)
+            
+            # Update liquidity pool
+            option.liquidity_pool = (option.liquidity_pool or 0) + amount
+            
             try:
-                # Create and save bet
-                bet = Bet(
-                    prediction_id=prediction.id,
-                    option_id=option.id,
-                    user_id=user_id,
-                    amount=amount,
-                    source_economy=economy,
-                    created_at=utc_now()
-                )
-                session.add(bet)
-                
-                # Update market state
-                await self._update_market_state(prediction, option, amount)
-                
                 await session.commit()
-                return True, None
+                self.logger.info(
+                    "Bet processed successfully",
+                    extra={
+                        'prediction_id': prediction.id,
+                        'user_id': user_id,
+                        'amount': amount,
+                        'option_id': option.id
+                    }
+                )
+                return True
                 
-            except Exception as e:
-                # If bet creation fails, attempt to refund points
-                await self._refund_points(user_id, amount, economy)
-                raise
+            except Exception as exc:  # Changed from 'e'
+                self.logger.error(
+                    "Database commit failed while processing bet",
+                    extra={
+                        'error': str(exc),
+                        'prediction_id': prediction.id,
+                        'user_id': user_id,
+                        'amount': amount
+                    },
+                    exc_info=True
+                )
+                await session.rollback()
+                return False
                 
-        except Exception as e:
-            self.logger.error("Error in _process_bet", exc_info=True)
-            return False, "Failed to process bet"
+        except Exception as exc:  # Changed from 'e'
+            self.logger.error(
+                "Error processing bet",
+                extra={
+                    'error': str(exc),
+                    'prediction_id': prediction.id,
+                    'user_id': user_id,
+                    'amount': amount
+                },
+                exc_info=True
+            )
+            return False
 
     async def start(self):
         """Initialize the service and load existing predictions."""
@@ -326,48 +452,80 @@ class PredictionMarketService:
             shares_received = current_shares - new_shares
             return shares_received
 
-    async def get_current_prices(
-        self,
-        prediction_id: int,
-        points_to_spend: int = 100
-    ) -> Dict[str, Dict]:
-        """Calculate current prices and potential shares for a given point amount."""
-        self.logger.debug(f"Getting current prices for prediction {prediction_id}")
-        try:
-            async with self.session_factory() as session:
-                # Load prediction with options in a single query
-                stmt = (
-                    select(Prediction)
-                    .options(selectinload(Prediction.options))
-                    .where(Prediction.id == prediction_id)
+    async def get_current_prices(self, prediction_id: int) -> dict:
+        """Get current prices and probabilities for all options in a prediction."""
+        async with self.session_factory() as session:
+            # Get prediction with options
+            prediction = await session.execute(
+                select(Prediction)
+                .options(selectinload(Prediction.options))
+                .where(Prediction.id == prediction_id)
+            )
+            prediction = prediction.scalar_one_or_none()
+            
+            if not prediction:
+                return {}
+
+            # Calculate total bets across all options
+            total_bets = sum(option.total_bet_amount for option in prediction.options)
+            
+            self.logger.debug(f"Total bets for prediction {prediction_id}: {total_bets}")
+
+            prices = {}
+            for option in prediction.options:
+                self.logger.debug(
+                    f"Option {option.id} total_bet_amount: {option.total_bet_amount}"
                 )
-                result = await session.execute(stmt)
-                prediction = result.scalar_one_or_none()
                 
-                if not prediction:
-                    raise ValueError(f"Prediction {prediction_id} not found")
+                if total_bets == 0:
+                    probability = 100.0 / len(prediction.options)
+                else:
+                    probability = (option.total_bet_amount / total_bets) * 100
+
+                prices[option.text] = {
+                    'probability': probability,
+                    'total_bets': option.total_bet_amount
+                }
+
+            return prices
+
+    async def calculate_payout(self, prediction_id: int, option_text: str, bet_amount: int) -> float:
+        """Calculate potential payout for a bet amount on a specific option."""
+        try:
+            prices = await self.get_current_prices(prediction_id)
+            if not prices or option_text not in prices:
+                return 0.0
+            
+            probability = prices[option_text]['probability'] / 100
+            if probability <= 0:
+                return 0.0
                 
-                prices = {}
-                for option in prediction.options:
-                    shares = await self.calculate_shares_for_points(
-                        prediction_id,
-                        option.id,
-                        points_to_spend
-                    )
-                    price_per_share = points_to_spend / shares if shares > 0 else float('inf')
-                    potential_payout = points_to_spend * (1 / price_per_share) if price_per_share > 0 else 0
-                    
-                    prices[option.text] = {
-                        'price_per_share': price_per_share,
-                        'potential_shares': shares,
-                        'potential_payout': potential_payout
-                    }
-                
-                return prices
-                
-        except Exception as e:
-            self.logger.error(f"Error getting current prices: {e}", exc_info=True)
-            raise
+            expected_payout = (bet_amount / probability) if probability > 0 else 0
+            
+            self.logger.debug(
+                "Calculated potential payout",
+                extra={
+                    'prediction_id': prediction_id,
+                    'option': option_text,
+                    'bet_amount': bet_amount,
+                    'probability': probability,
+                    'expected_payout': expected_payout
+                }
+            )
+            
+            return expected_payout
+
+        except Exception as exc:
+            self.logger.error(
+                "Error calculating payout",
+                extra={
+                    'error': str(exc),
+                    'prediction_id': prediction_id,
+                    'option': option_text
+                },
+                exc_info=True
+            )
+            return 0.0
 
     async def get_user_payout(self, prediction_id: int, user_id: int) -> int:
         """Calculate payout based on shares owned and final pool state."""
@@ -409,94 +567,137 @@ class PredictionMarketService:
             return int(winning_bet.amount * share_value)
 
     async def get_all_predictions(self) -> List[Prediction]:
-        """Get all predictions ordered by creation date."""
-        self.logger.debug("Starting get_all_predictions()")
+        """Get all predictions with their relationships loaded."""
         try:
+            self.logger.debug("Fetching all predictions")
             async with self.session_factory() as session:
-                # Load everything we need in a single query
-                stmt = (
-                    select(Prediction)
-                    .options(
-                        selectinload(Prediction.options),
-                        selectinload(Prediction.bets)
-                    )
-                    .order_by(Prediction.created_at.desc())
-                )
+                # Use select() with proper relationship loading
+                stmt = select(Prediction).options(
+                    selectinload(Prediction.bets),
+                    selectinload(Prediction.options)
+                ).order_by(Prediction.created_at.desc())
                 
                 result = await session.execute(stmt)
-                predictions = result.scalars().unique().all()
+                predictions = result.scalars().all()
                 
-                # Explicitly load all the data we need before session closes
-                loaded_predictions = []
-                for pred in predictions:
-                    loaded_pred = {
-                        'id': pred.id,
-                        'question': pred.question,
-                        'category': pred.category,
-                        'creator_id': pred.creator_id,
-                        'created_at': pred.created_at,
-                        'end_time': pred.end_time,
-                        'resolved': pred.resolved,
-                        'refunded': pred.refunded,
-                        'total_bets': pred.total_bets,
-                        'options': [
-                            {'id': opt.id, 'text': opt.text, 'liquidity_pool': opt.liquidity_pool}
-                            for opt in pred.options
-                        ]
-                    }
-                    loaded_predictions.append(loaded_pred)
-                
-                return loaded_predictions
-                
+                self.logger.debug(f"Found {len(predictions)} predictions with relationships")
+                return predictions
+
         except Exception as e:
-            self.logger.error(f"Error fetching predictions: {e}", exc_info=True)
-            raise
+            self.logger.error(f"Error fetching predictions: {str(e)}", exc_info=True)
+            return []
 
     async def create_prediction(
         self,
         question: str,
         options: List[str],
-        end_time: datetime,
         creator_id: int,
+        end_time: datetime,
         category: Optional[str] = None
-    ) -> Prediction:
-        """Create a new prediction market."""
-        self.logger.info(f"Creating prediction: {question}")
-        
-        # Ensure end_time is UTC
-        end_time = ensure_utc(end_time)
-        
-        async with self.session_factory() as session:
-            async with session.begin():
+    ) -> Optional[Prediction]:
+        """Create a new prediction with options."""
+        try:
+            async with self.session_factory() as session:
+                # Create prediction
                 prediction = Prediction(
                     question=question,
-                    end_time=end_time,
                     creator_id=creator_id,
-                    category=category,
-                    created_at=utc_now()
+                    end_time=end_time,
+                    category=category
                 )
                 session.add(prediction)
                 
-                # Create options with initial liquidity pools
+                # Create options
                 for option_text in options:
                     option = PredictionOption(
-                        prediction=prediction,
                         text=option_text,
-                        liquidity_pool=100  # Initial liquidity
+                        prediction=prediction
                     )
                     session.add(option)
                 
-                await session.commit()
-                
-                # Initialize market balance tracking
-                self._market_balance[prediction.id] = {}
-                
-                # Schedule end notification
-                self._schedule_end_notification(prediction)
-                
-                self.logger.info(f"Created prediction {prediction.id}: {question}")
-                return prediction
+                try:
+                    await session.commit()
+                    await session.refresh(prediction)
+                    self.logger.info(
+                        "Created new prediction",
+                        extra={
+                            'prediction_id': prediction.id,
+                            'creator_id': creator_id,
+                            'category': category
+                        }
+                    )
+                    return prediction
+                    
+                except Exception as exc:
+                    self.logger.error(
+                        "Database commit failed",
+                        extra={
+                            'error': str(exc),
+                            'question': question,
+                            'creator_id': creator_id,
+                            'category': category
+                        },
+                        exc_info=True
+                    )
+                    await session.rollback()
+                    return None
+                    
+        except Exception as exc:
+            self.logger.error(
+                "Prediction creation failed",
+                extra={
+                    'error': str(exc),
+                    'question': question,
+                    'creator_id': creator_id,
+                    'category': category
+                },
+                exc_info=True
+            )
+            return None
+
+    async def schedule_prediction_resolution(self, prediction: Prediction):
+        """Schedule notification for when betting period ends."""
+        try:
+            # Ensure both datetimes are UTC-aware before subtraction
+            end_time = ensure_utc(prediction.end_time)
+            current_time = utc_now()
             
+            time_until_betting_ends = (end_time - current_time).total_seconds()
+            if time_until_betting_ends > 0:
+                self.logger.debug(f"Waiting {time_until_betting_ends} seconds for betting to end")
+                await asyncio.sleep(time_until_betting_ends)
+            
+            # Recheck prediction state after waiting
+            async with self.session_factory() as session:
+                stmt = select(Prediction).where(Prediction.id == prediction.id)
+                result = await session.execute(stmt)
+                prediction = result.scalar_one_or_none()
+                
+                if not prediction:
+                    self.logger.error("Prediction no longer exists")
+                    return
+                
+                if prediction.resolved:
+                    self.logger.debug("Prediction already resolved before betting end")
+                    return
+                
+                self.logger.debug(f"Betting period ended for prediction: {prediction.question}")
+                
+                # Notify creator that betting period has ended
+                try:
+                    creator = await self.bot.fetch_user(prediction.creator_id)
+                    await creator.send(
+                        f"Betting has ended for your prediction: '{prediction.question}'\n"
+                        f"Please use /resolve_prediction to resolve the market.\n"
+                        f"If not resolved within 48 hours, all bets will be automatically refunded."
+                    )
+                    self.logger.debug(f"Sent notification to creator {prediction.creator_id}")
+                except Exception as e:
+                    self.logger.error(f"Error notifying creator: {str(e)}", exc_info=True)
+
+        except Exception as e:
+            self.logger.error(f"Error in resolution scheduler: {str(e)}", exc_info=True)
+
     async def stop(self):
         """Cleanup service resources."""
         self.logger.info("Stopping prediction market service...")
@@ -511,35 +712,89 @@ class PredictionMarketService:
         self.logger.info("Prediction market service stopped")
 
     def _schedule_end_notification(self, prediction: Prediction):
-        """Schedule a notification for when the prediction ends."""
-        # Existing notification logic...
+        """Schedule a notification for when a prediction ends."""
+        self.scheduler.add_job(
+            self._send_end_notification,
+            'date',
+            run_date=prediction.end_time,
+            args=[prediction.id],
+            id=f"end_notification_{prediction.id}"
+        )
+        
+        self.logger.debug(
+            "Scheduled end notification",
+            extra={
+                'prediction_id': prediction.id,
+                'end_time': prediction.end_time.isoformat()
+            }
+        )
 
-    async def get_active_predictions(self) -> List[Prediction]:
-        """Get all active (unresolved) predictions."""
-        self.logger.debug("Starting get_active_predictions")
+    async def get_unresolved_predictions(self) -> List[Prediction]:
+        """Get all unresolved predictions."""
         try:
             async with self.session_factory() as session:
-                current_time = utc_now()
-                stmt = (
-                    select(Prediction)
-                    .options(
-                        selectinload(Prediction.options),
-                        selectinload(Prediction.bets)
-                    )
-                    .where(
-                        Prediction.resolved == False,
-                        Prediction.end_time > current_time
-                    )
-                    .order_by(Prediction.created_at.desc())
-                )
+                stmt = select(Prediction).options(
+                    selectinload(Prediction.options),
+                    selectinload(Prediction.bets)
+                ).where(not_(Prediction.resolved))
                 
                 result = await session.execute(stmt)
-                predictions = result.scalars().unique().all()
-                return list(predictions)
+                return list(result.scalars().all())
+        except Exception as exc:
+            self.logger.error(
+                "Error fetching unresolved predictions",
+                extra={'error': str(exc)},
+                exc_info=True
+            )
+            return []
+
+    async def get_active_predictions(self):
+        """Fetch active predictions from the database."""
+        current_time = utc_now()
+        
+        async with self.session_factory() as session:
+            # Use selectinload to eagerly load the options relationship
+            result = await session.execute(
+                select(Prediction)
+                .options(selectinload(Prediction.options))
+                .where(
+                    and_(
+                        Prediction.resolved == False,  # Not resolved
+                        Prediction.end_time > current_time  # Not ended
+                    )
+                )
+                .order_by(Prediction.end_time)  # Order by end time
+            )
+            
+            predictions = result.scalars().all()
+            self.logger.debug(
+                f"Found {len(predictions)} active predictions before end time {current_time}"
+            )
+            return predictions
+
+    async def get_pending_resolution_predictions(self) -> List[Prediction]:
+        """Get predictions that have ended but haven't been resolved."""
+        try:
+            self.logger.debug("Fetching pending resolution predictions")
+            current_time = utc_now()
+
+            async with self.session_factory() as session:
+                stmt = select(Prediction).options(
+                    selectinload(Prediction.options),
+                    selectinload(Prediction.bets)
+                ).where(
+                    and_(
+                        Prediction.resolved == False,  # noqa: E712
+                        Prediction.end_time <= current_time
+                    )
+                ).order_by(Prediction.end_time.asc())
                 
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+
         except Exception as e:
-            self.logger.error(f"Error getting active predictions: {e}", exc_info=True)
-            raise
+            self.logger.error(f"Error fetching pending resolution predictions: {str(e)}", exc_info=True)
+            return []
 
     async def get_resolvable_predictions(self, user_id: int) -> List[Prediction]:
         """Get predictions that can be resolved by the given user."""
@@ -570,136 +825,20 @@ class PredictionMarketService:
             raise
 
     async def get_prediction(self, prediction_id: int) -> Optional[Prediction]:
-        """Get a single prediction with all its related data."""
-        self.logger.debug(f"Getting prediction {prediction_id}")
+        """Get a single prediction by ID with relationships loaded."""
         try:
             async with self.session_factory() as session:
-                # Load prediction with options and bets in a single query
-                stmt = (
-                    select(Prediction)
-                    .options(
-                        selectinload(Prediction.options),
-                        selectinload(Prediction.bets)
-                    )
-                    .where(Prediction.id == prediction_id)
-                )
+                stmt = select(Prediction).options(
+                    selectinload(Prediction.options),
+                    selectinload(Prediction.bets)
+                ).where(Prediction.id == prediction_id)
                 
                 result = await session.execute(stmt)
-                prediction = result.scalar_one_or_none()
-                
-                if prediction is None:
-                    self.logger.error(f"Prediction {prediction_id} not found")
-                    return None
-                
-                self.logger.debug(f"Found prediction: {prediction.question}")
-                return prediction
+                return result.scalar_one_or_none()
                 
         except Exception as e:
-            self.logger.error(f"Error getting prediction: {e}", exc_info=True)
-            raise
-
-    async def resolve_prediction(
-        self,
-        prediction_id: int,
-        winning_option: str,
-        resolver_id: int
-    ) -> bool:
-        """Resolve a prediction market and distribute rewards.
-        
-        Args:
-            prediction_id: ID of the prediction to resolve
-            winning_option: Text of the winning option
-            resolver_id: Discord ID of the user resolving the prediction
-            
-        Returns:
-            bool: True if resolution was successful
-        """
-        self.logger.debug(
-            f"Resolving prediction {prediction_id} with winner {winning_option}"
-        )
-        
-        try:
-            async with self.session_factory() as session:
-                async with session.begin():
-                    # Load prediction with options and bets
-                    stmt = (
-                        select(Prediction)
-                        .options(
-                            selectinload(Prediction.options),
-                            selectinload(Prediction.bets)
-                        )
-                        .where(Prediction.id == prediction_id)
-                    )
-                    result = await session.execute(stmt)
-                    prediction = result.scalar_one_or_none()
-                    
-                    if not prediction:
-                        self.logger.error(f"Prediction {prediction_id} not found")
-                        return False
-                        
-                    if prediction.resolved:
-                        self.logger.error("Prediction already resolved")
-                        return False
-                    
-                    # Find winning option
-                    winning_opt = next(
-                        (opt for opt in prediction.options if opt.text == winning_option),
-                        None
-                    )
-                    if not winning_opt:
-                        self.logger.error(f"Option {winning_option} not found")
-                        return False
-                    
-                    # Calculate share values based on final liquidity pools
-                    total_liquidity = sum(opt.liquidity_pool for opt in prediction.options)
-                    share_value = total_liquidity / winning_opt.liquidity_pool
-                    
-                    # Process payouts for each bet
-                    for bet in prediction.bets:
-                        try:
-                            if bet.option_id == winning_opt.id:
-                                # Calculate payout based on shares
-                                shares = await self.calculate_amm_shares(
-                                    prediction_id,
-                                    winning_option,
-                                    bet.amount
-                                )
-                                payout = int(shares * share_value)
-                                
-                                # Get external service for the bet's economy
-                                external_service = self.bot.transfer_service.get_external_service(
-                                    bet.source_economy
-                                )
-                                
-                                # Add payout to user's balance
-                                await external_service.add_points(bet.user_id, payout)
-                                
-                                self.logger.info(
-                                    f"Paid {payout} points to user {bet.user_id} "
-                                    f"from {bet.source_economy}"
-                                )
-                                
-                        except Exception as e:
-                            self.logger.error(
-                                f"Error processing payout for bet {bet.id}: {e}",
-                                exc_info=True
-                            )
-                            # Continue processing other bets
-                            continue
-                    
-                    # Mark prediction as resolved
-                    prediction.resolved = True
-                    prediction.resolved_at = utc_now()
-                    prediction.resolver_id = resolver_id
-                    prediction.winning_option_id = winning_opt.id
-                    
-                    await session.commit()
-                    self.logger.info(f"Successfully resolved prediction {prediction_id}")
-                    return True
-                    
-        except Exception as e:
-            self.logger.error(f"Error resolving prediction: {e}", exc_info=True)
-            return False
+            self.logger.error(f"Error fetching prediction: {str(e)}", exc_info=True)
+            return None
 
     async def cancel_prediction(
         self,
@@ -740,26 +879,32 @@ class PredictionMarketService:
                     # Process refunds for each bet
                     for bet in prediction.bets:
                         try:
-                            # Get external service for the bet's economy
-                            external_service = self.bot.transfer_service.get_external_service(
-                                bet.source_economy
+                            await self.bot.transfer_service.add_points(
+                                bet.user_id,
+                                bet.amount,
+                                bet.economy,
+                                f"Refund: Prediction {prediction_id} cancelled"
                             )
-                            
-                            # Refund the original bet amount
-                            await external_service.add_points(bet.user_id, bet.amount)
                             
                             self.logger.info(
-                                f"Refunded {bet.amount} points to user {bet.user_id} "
-                                f"from {bet.source_economy}"
+                                "Refunded bet",
+                                extra={
+                                    'user_id': bet.user_id,
+                                    'amount': bet.amount,
+                                    'prediction_id': prediction_id
+                                }
                             )
-                            
-                        except Exception as e:
+                        except Exception as exc:
                             self.logger.error(
-                                f"Error processing refund for bet {bet.id}: {e}",
+                                "Error processing refund",
+                                extra={
+                                    'error': str(exc),
+                                    'bet_id': bet.id,
+                                    'user_id': bet.user_id,
+                                    'amount': bet.amount
+                                },
                                 exc_info=True
                             )
-                            # Continue processing other refunds
-                            continue
                     
                     # Mark prediction as resolved and refunded
                     prediction.resolved = True
@@ -937,55 +1082,6 @@ class PredictionMarketService:
             self.logger.error(f"Error calculating AMM shares: {e}", exc_info=True)
             raise
 
-    async def get_current_prices(self, prediction_id: int) -> Dict[str, dict]:
-        """Get current market prices and statistics"""
-        self.logger.debug(f"Getting current prices for prediction {prediction_id}")
-        
-        try:
-            async with self.session_factory() as session:
-                # Load prediction with options and bets
-                stmt = (
-                    select(Prediction)
-                    .options(
-                        selectinload(Prediction.options),
-                        selectinload(Prediction.bets)
-                    )
-                    .where(Prediction.id == prediction_id)
-                )
-                result = await session.execute(stmt)
-                prediction = result.scalar_one_or_none()
-                
-                if not prediction:
-                    raise ValueError(f"Prediction {prediction_id} not found")
-                
-                prices = {}
-                total_liquidity = sum(opt.liquidity_pool for opt in prediction.options)
-                
-                for option in prediction.options:
-                    # Calculate probability based on liquidity pools
-                    probability = (option.liquidity_pool / total_liquidity * 100) if total_liquidity > 0 else 0
-                    
-                    # Calculate price for a standard amount (e.g., 100 points)
-                    test_amount = 100
-                    shares = await self.calculate_amm_shares(prediction_id, option.text, test_amount)
-                    price_per_share = test_amount / shares if shares > 0 else float('inf')
-                    
-                    # Get total bets for this option
-                    option_bets = sum(bet.amount for bet in prediction.bets if bet.option_id == option.id)
-                    
-                    prices[option.text] = {
-                        'price_per_share': price_per_share,
-                        'probability': probability,
-                        'total_bets': option_bets,
-                        'liquidity_pool': option.liquidity_pool
-                    }
-                
-                return prices
-                
-        except Exception as e:
-            self.logger.error(f"Error getting current prices: {e}", exc_info=True)
-            raise
-
     async def send_resolution_notification(
         self,
         prediction_id: int,
@@ -1158,7 +1254,6 @@ class PredictionMarketService:
                         # Add bet details
                         bet_details = ""
                         for bet in winnings['bets']:
-                            profit = bet['payout'] - bet['amount']
                             bet_details += (
                                 f"\nBet: {bet['amount']:,} Points "
                                 f"({bet['economy']})\n"
@@ -1179,3 +1274,287 @@ class PredictionMarketService:
         except Exception as e:
             self.logger.error(f"Error sending winner notifications: {e}", exc_info=True)
             return False
+
+    async def refund_prediction(self, prediction_id: int) -> bool:
+        """Refund all bets for a prediction."""
+        try:
+            self.logger.debug(f"Attempting to refund prediction {prediction_id}")
+            
+            async with self.session_factory() as session:
+                # Get prediction with relationships
+                stmt = select(Prediction).options(
+                    selectinload(Prediction.bets)
+                ).where(Prediction.id == prediction_id)
+                
+                result = await session.execute(stmt)
+                prediction = result.scalar_one_or_none()
+                
+                if not prediction:
+                    self.logger.error(f"Prediction {prediction_id} not found")
+                    return False
+
+                if prediction.refunded:
+                    self.logger.warning("Prediction already refunded")
+                    return False
+
+                # Process refunds
+                for bet in prediction.bets:
+                    # Return points to user's balance
+                    success = await self.bot.transfer_service.add_points(
+                        bet.user_id,
+                        bet.amount,
+                        bet.economy,
+                        f"Refund: {prediction.question}"
+                    )
+                    if not success:
+                        self.logger.error(f"Failed to refund bet {bet.id}")
+                        return False
+
+                # Mark prediction as refunded
+                prediction.refunded = True
+                prediction.resolved = True
+                prediction.resolved_at = utc_now()
+                
+                await session.commit()
+                
+                self.logger.info(f"Successfully refunded prediction {prediction_id}")
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Error refunding prediction: {str(e)}", exc_info=True)
+            return False
+
+    async def get_unresolved_predictions_by_creator(self, creator_id: int) -> List[Prediction]:
+        """Get all unresolved predictions created by a specific user."""
+        try:
+            async with self.session_factory() as session:
+                stmt = select(Prediction).options(
+                    selectinload(Prediction.options),
+                    selectinload(Prediction.bets)
+                ).where(
+                    and_(
+                        Prediction.creator_id == creator_id,
+                        not_(Prediction.resolved)
+                    )
+                )
+                
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+        except Exception as exc:
+            self.logger.error(
+                "Error fetching unresolved predictions by creator",
+                extra={
+                    'error': str(exc),
+                    'creator_id': creator_id
+                },
+                exc_info=True
+            )
+            return []
+
+    async def get_prediction_status(self, prediction_id: int) -> Dict[str, Any]:
+        """Get the current status of a prediction."""
+        try:
+            async with self.session_factory() as session:
+                prediction = await self._get_prediction_with_relations(session, prediction_id)
+                
+                if not prediction:
+                    self.logger.warning(
+                        "Prediction not found",
+                        extra={'prediction_id': prediction_id}
+                    )
+                    return {}
+
+                # Calculate total pool and option pools
+                total_pool = sum(bet.amount for bet in prediction.bets)
+                option_pools = {}
+                for option in prediction.options:
+                    option_pool = sum(bet.amount for bet in prediction.bets if bet.option_id == option.id)
+                    option_pools[option.text] = {
+                        'pool_amount': option_pool,
+                        'percentage': (option_pool / total_pool * 100) if total_pool > 0 else 0
+                    }
+
+                # Get current prices
+                prices = await self.get_current_prices(prediction_id)
+
+                # Build status response
+                status = {
+                    'id': prediction.id,
+                    'question': prediction.question,
+                    'creator_id': prediction.creator_id,
+                    'created_at': prediction.created_at.isoformat(),
+                    'end_time': prediction.end_time.isoformat(),
+                    'resolved': prediction.resolved,
+                    'resolved_at': prediction.resolved_at.isoformat() if prediction.resolved_at else None,
+                    'resolver_id': prediction.resolver_id,
+                    'total_pool': total_pool,
+                    'options': option_pools,
+                    'prices': prices,
+                    'total_bets': len(prediction.bets),
+                    'unique_bettors': len(set(bet.user_id for bet in prediction.bets))
+                }
+
+                if prediction.resolved:
+                    winning_option = next(
+                        (opt for opt in prediction.options if opt.id == prediction.winning_option_id),
+                        None
+                    )
+                    if winning_option:
+                        status['winning_option'] = winning_option.text
+                        status['winning_pool'] = option_pools[winning_option.text]['pool_amount']
+
+                return status
+
+        except Exception as exc:
+            self.logger.error(
+                "Error getting prediction status",
+                extra={
+                    'error': str(exc),
+                    'prediction_id': prediction_id
+                },
+                exc_info=True
+            )
+            return {}
+
+    async def get_prediction_by_id(self, prediction_id: int) -> Optional[Prediction]:
+        """Get a prediction by its ID."""
+        try:
+            async with self.session_factory() as session:
+                stmt = select(Prediction).options(
+                    selectinload(Prediction.options),
+                    selectinload(Prediction.bets)
+                ).where(Prediction.id == prediction_id)
+                
+                result = await session.execute(stmt)
+                return result.scalar_one_or_none()
+                
+        except Exception as exc:
+            self.logger.error(
+                "Error fetching prediction by ID",
+                extra={
+                    'error': str(exc),
+                    'prediction_id': prediction_id
+                },
+                exc_info=True
+            )
+            return None
+
+    async def get_user_bets(self, user_id: int) -> List[Bet]:
+        """Get all bets placed by a user."""
+        try:
+            async with self.session_factory() as session:
+                stmt = select(Bet).options(
+                    selectinload(Bet.option).selectinload(PredictionOption.prediction)
+                ).where(Bet.user_id == user_id)
+                
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+                
+        except Exception as exc:  # Changed from 'e' to 'exc'
+            self.logger.error(
+                "Error fetching user bets",
+                extra={
+                    'error': str(exc),
+                    'user_id': user_id
+                },
+                exc_info=True
+            )
+            return []
+
+    async def get_prediction_bets(self, prediction_id: int) -> List[Bet]:
+        """Get all bets for a specific prediction."""
+        try:
+            async with self.session_factory() as session:
+                stmt = select(Bet).join(PredictionOption).where(
+                    PredictionOption.prediction_id == prediction_id
+                )
+                
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+                
+        except Exception as exc:  # Changed from 'e' to 'exc'
+            self.logger.error(
+                "Error fetching prediction bets",
+                extra={
+                    'error': str(exc),
+                    'prediction_id': prediction_id
+                },
+                exc_info=True
+            )
+            return []
+
+    async def get_option_bets(self, option_id: int) -> List[Bet]:
+        """Get all bets for a specific option."""
+        try:
+            async with self.session_factory() as session:
+                stmt = select(Bet).where(Bet.option_id == option_id)
+                
+                result = await session.execute(stmt)
+                return list(result.scalars().all())
+                
+        except Exception as exc:  # Changed from 'e' to 'exc'
+            self.logger.error(
+                "Error fetching option bets",
+                extra={
+                    'error': str(exc),
+                    'option_id': option_id
+                },
+                exc_info=True
+            )
+            return []
+
+    async def auto_resolve_prediction(self, prediction_id: int) -> None:
+        """Auto-resolve a prediction by refunding all bets."""
+        try:
+            async with self.session_factory() as session:
+                prediction = await self._get_prediction_with_relations(session, prediction_id)
+                if not prediction:
+                    return
+
+                if prediction.resolved:
+                    return
+
+                # Process refunds
+                for bet in prediction.bets:
+                    try:
+                        await self.bot.transfer_service.add_points(  # Changed from credit
+                            bet.user_id,
+                            bet.amount,
+                            bet.economy,
+                            f"Auto-refund: Prediction {prediction_id} expired"
+                        )
+                        
+                        self.logger.info(
+                            "Auto-refunded bet",
+                            extra={
+                                'user_id': bet.user_id,
+                                'amount': bet.amount,
+                                'prediction_id': prediction_id
+                            }
+                        )
+                    except Exception as exc:
+                        self.logger.error(
+                            "Error processing auto-refund",
+                            extra={
+                                'error': str(exc),
+                                'bet_id': bet.id,
+                                'user_id': bet.user_id,
+                                'amount': bet.amount
+                            },
+                            exc_info=True
+                        )
+
+                # Mark prediction as resolved
+                prediction.resolved = True
+                prediction.resolved_at = utc_now()
+                await session.commit()
+
+        except Exception as exc:
+            self.logger.error(
+                "Error in auto-resolution",
+                extra={
+                    'error': str(exc),
+                    'prediction_id': prediction_id
+                },
+                exc_info=True
+            )

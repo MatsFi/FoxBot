@@ -85,6 +85,7 @@ class PredictionOption(Base):
     text: Mapped[str]
     liquidity_pool: Mapped[int] = mapped_column(default=30000)
     k_constant: Mapped[int] = mapped_column(default=900000000)
+    total_bet_amount: Mapped[int] = mapped_column(default=0)
     
     # Relationships
     prediction: Mapped["Prediction"] = relationship(back_populates="options")
