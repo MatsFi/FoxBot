@@ -299,33 +299,69 @@ class PredictionMarket(commands.Cog):
     async def resolve_prediction(self, interaction: discord.Interaction):
         """Resolve a prediction using a two-step selection process."""
         self.logger.debug("Starting resolve_prediction command")
-        await interaction.response.defer(ephemeral=True)
         
         try:
+            # Log interaction state
+            self.logger.debug(f"Interaction state - is_done: {interaction.response.is_done()}")
+            self.logger.debug(f"Channel permissions - bot: {interaction.channel.permissions_for(interaction.guild.me)}")
+            
             # Get predictions that the user can resolve
-            predictions = await self.service.get_unresolved_predictions_by_creator(interaction.user.id)
+            predictions = await self.service.get_unresolved_predictions_by_creator(
+                interaction.user.id
+            )
             
             if not predictions:
-                await interaction.followup.send(
+                self.logger.debug("No unresolved predictions found")
+                await interaction.response.send_message(
                     "You have no unresolved predictions to resolve.",
                     ephemeral=True
                 )
                 return
 
+            self.logger.debug(f"Found {len(predictions)} unresolved predictions")
+            
             # Create the initial selection view
             view = ResolvePredictionView(predictions, self)
-            await interaction.followup.send(
-                "Select a prediction to resolve:",
-                view=view,
-                ephemeral=True
-            )
+            
+            try:
+                # Use followup if interaction is already responded to
+                if interaction.response.is_done():
+                    self.logger.debug("Using followup for response")
+                    await interaction.followup.send(
+                        "Select a prediction to resolve:",
+                        view=view,
+                        ephemeral=True
+                    )
+                else:
+                    self.logger.debug("Using initial response")
+                    await interaction.response.send_message(
+                        "Select a prediction to resolve:",
+                        view=view,
+                        ephemeral=True
+                    )
+                    
+            except discord.Forbidden as e:
+                self.logger.error(f"Permission error sending message: {e}")
+                raise
+            except Exception as e:
+                self.logger.error(f"Error sending resolution message: {e}")
+                raise
                 
-        except Exception as e:
-            self.logger.error(f"Error in resolve_prediction: {str(e)}", exc_info=True)
-            await interaction.followup.send(
-                "An error occurred while starting the resolution process.",
-                ephemeral=True
-            )
+        except Exception:
+            self.logger.error("Error in resolve_prediction", exc_info=True)
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        "An error occurred while starting the resolution process.",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        "An error occurred while starting the resolution process.",
+                        ephemeral=True
+                    )
+            except Exception:
+                self.logger.error("Failed to send error message", exc_info=True)
 
     async def prediction_id_autocomplete(
         self,
@@ -478,58 +514,80 @@ class PaginatedPredictionView(discord.ui.View):
         )
 
 class ResolvePredictionView(discord.ui.View):
-    def __init__(self, predictions: List[Prediction], cog):
-        super().__init__()
+    def __init__(self, predictions, cog):
+        super().__init__(timeout=180.0)  # 3 minute timeout
         self.predictions = predictions
         self.cog = cog
+        self.logger = logging.getLogger(__name__)
         
-        # Create the prediction select menu
-        options = [
-            discord.SelectOption(
-                label=f"#{p.id}: {p.question[:50]}{'...' if len(p.question) > 50 else ''}",
-                description=f"Created: {p.created_at.strftime('%Y-%m-%d')}",
-                value=str(p.id)
-            )
-            for p in predictions
-        ]
-        
-        self.prediction_select = discord.ui.Select(
+        # Add select menu for predictions
+        select_menu = discord.ui.Select(
             placeholder="Choose a prediction to resolve...",
-            options=options,
-            custom_id="prediction_select"
+            options=[
+                discord.SelectOption(
+                    label=f"{pred.question[:80]}",  # Truncate if too long
+                    value=str(pred.id)
+                ) for pred in predictions
+            ]
         )
-        self.prediction_select.callback = self.prediction_selected
-        self.add_item(self.prediction_select)
-    
+        select_menu.callback = self.prediction_selected
+        self.add_item(select_menu)
+
     async def prediction_selected(self, interaction: discord.Interaction):
-        """Handle prediction selection."""
+        self.logger.debug(f"Prediction selected for resolution: {interaction.data['values'][0]}")
         try:
-            prediction_id = int(self.prediction_select.values[0])
-            selected_prediction = next(p for p in self.predictions if p.id == prediction_id)
-            
-            # Create the options view
-            view = ResolveOptionsView(selected_prediction, self.cog)
-            
-            await interaction.response.edit_message(
-                content=f"Select the winning option for: {selected_prediction.question}",
-                view=view
+            pred_id = int(interaction.data['values'][0])
+            prediction = next(
+                (p for p in self.predictions if p.id == pred_id),
+                None
             )
             
+            if not prediction:
+                self.logger.error(f"Could not find prediction {pred_id}")
+                await interaction.response.send_message(
+                    "Error: Could not find the selected prediction.",
+                    ephemeral=True
+                )
+                return
+
+            # Create options view
+            options_view = ResolutionOptionsView(prediction, self.cog)
+            
+            try:
+                # Try to edit the message
+                await interaction.response.edit_message(
+                    content=f"**{prediction.question}**\nSelect the winning option:",
+                    view=options_view
+                )
+            except discord.Forbidden:
+                self.logger.warning("Could not edit message, sending new one")
+                await interaction.response.send_message(
+                    f"**{prediction.question}**\nSelect the winning option:",
+                    view=options_view,
+                    ephemeral=True
+                )
+            except Exception as e:
+                self.logger.error(f"Error updating message: {e}", exc_info=True)
+                await interaction.response.send_message(
+                    "An error occurred while processing your selection.",
+                    ephemeral=True
+                )
+                
         except Exception as e:
-            self.cog.logger.error(f"Error in prediction selection: {str(e)}", exc_info=True)
+            self.logger.error(f"Error in prediction selection: {e}", exc_info=True)
             await interaction.response.send_message(
-                "An error occurred while selecting the prediction.",
+                "An error occurred while processing your selection.",
                 ephemeral=True
             )
 
-class ResolveOptionsView(discord.ui.View):
+class ResolutionOptionsView(discord.ui.View):
     def __init__(self, prediction, cog):
-        super().__init__()
+        super().__init__(timeout=180.0)
         self.prediction = prediction
         self.cog = cog
         self.logger = logging.getLogger(__name__)
         
-        # Add buttons for each option
+        # Add button for each option
         for option in prediction.options:
             button = discord.ui.Button(
                 style=discord.ButtonStyle.primary,
@@ -538,71 +596,38 @@ class ResolveOptionsView(discord.ui.View):
             )
             button.callback = self.create_callback(option)
             self.add_item(button)
-            
-        self.logger.debug(
-            f"Created resolution view for prediction {prediction.id} "
-            f"with {len(prediction.options)} options"
-        )
 
     def create_callback(self, option):
-        """Create a callback for the option button."""
         async def button_callback(interaction: discord.Interaction):
-            self.logger.debug(
-                f"Resolution button clicked - Prediction: {self.prediction.id}, "
-                f"Option: {option.id}"
-            )
-            
+            self.logger.debug(f"Resolution option selected: {option.id}")
             try:
-                # Resolve the prediction with the selected option
                 success = await self.cog.service.resolve_prediction(
                     self.prediction.id,
                     option.id
                 )
                 
                 if success:
-                    self.logger.debug(
-                        f"Successfully resolved prediction {self.prediction.id} "
-                        f"with winning option {option.id}"
-                    )
-                    # Disable all buttons
-                    for item in self.children:
-                        item.disabled = True
-                    
-                    try:
-                        # Try to edit the message with disabled buttons
-                        await interaction.message.edit(view=self)
-                    except discord.errors.Forbidden:
-                        self.logger.warning(
-                            "Could not edit message due to permissions, continuing with resolution"
-                        )
-                    
                     await interaction.response.send_message(
-                        f"Prediction resolved! The winning option was: {option.text}",
+                        f"Prediction resolved! Winning option: {option.text}",
                         ephemeral=True
                     )
                 else:
-                    self.logger.error(
-                        f"Failed to resolve prediction {self.prediction.id}"
-                    )
                     await interaction.response.send_message(
                         "Failed to resolve prediction. Please try again.",
                         ephemeral=True
                     )
-                
+                    
             except Exception as e:
-                self.logger.error(
-                    "Error in resolution button callback: ",
-                    exc_info=True
-                )
+                self.logger.error(f"Error resolving prediction: {e}", exc_info=True)
                 await interaction.response.send_message(
                     "An error occurred while resolving the prediction.",
                     ephemeral=True
                 )
-        
+                
         return button_callback
 
 class EconomySelectView(discord.ui.View):
-    def __init__(self, prediction, option, amount, cog):
+    def __init__(self, prediction, option, amount, cog, available_economies):
         super().__init__(timeout=180.0)
         self.prediction = prediction
         self.option = option
@@ -610,8 +635,8 @@ class EconomySelectView(discord.ui.View):
         self.cog = cog
         self.logger = logging.getLogger(__name__)
         
-        economies = ["Hackathon", "LocalPoints"]
-        for economy in economies:
+        # Only add buttons for available external economies
+        for economy in available_economies:
             button = discord.ui.Button(
                 style=discord.ButtonStyle.primary,
                 label=economy,
@@ -622,7 +647,7 @@ class EconomySelectView(discord.ui.View):
             
         self.logger.debug(
             f"Created economy selection view for prediction {prediction.id} "
-            f"with {len(economies)} economies"
+            f"with {len(available_economies)} economies"
         )
 
     def create_callback(self, economy):
@@ -736,10 +761,26 @@ class BetAmountSelect(discord.ui.Select):
         self.logger = logging.getLogger(__name__)
         
         options = [
-            discord.SelectOption(label="100 points", value="100"),
-            discord.SelectOption(label="500 points", value="500"),
-            discord.SelectOption(label="1000 points", value="1000"),
-            discord.SelectOption(label="Custom amount", value="custom")
+            discord.SelectOption(
+                label="100 points",
+                value="100",
+                description="Small bet"
+            ),
+            discord.SelectOption(
+                label="500 points",
+                value="500",
+                description="Medium bet"
+            ),
+            discord.SelectOption(
+                label="1000 points",
+                value="1000",
+                description="Large bet"
+            ),
+            discord.SelectOption(
+                label="Custom amount",
+                value="custom",
+                description="Enter your own amount"
+            )
         ]
         
         super().__init__(
@@ -754,9 +795,50 @@ class BetAmountSelect(discord.ui.Select):
             if self.values[0] == "custom":
                 modal = CustomBetModal(self.prediction, self.option, self.cog)
                 await interaction.response.send_modal(modal)
+                return
+
+            amount = int(self.values[0])
+            
+            # Get available external economies from transfer service directly
+            external_economies = list(self.cog.bot.transfer_service._external_services.keys())
+            
+            if len(external_economies) == 0:
+                await interaction.response.send_message(
+                    "No external economies available for betting.",
+                    ephemeral=True
+                )
+                return
+                
+            if len(external_economies) == 1:
+                # If only one economy, use it directly
+                economy = external_economies[0]
+                success = await self.cog.service.place_bet(
+                    self.prediction.id,
+                    self.option.id,
+                    interaction.user.id,
+                    amount,
+                    economy
+                )
+                
+                if success:
+                    await interaction.response.send_message(
+                        f"Bet placed: {amount} {economy} points on {self.option.text}",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        f"Failed to place bet. Please check your {economy} balance.",
+                        ephemeral=True
+                    )
             else:
-                amount = int(self.values[0])
-                view = EconomySelectView(self.prediction, self.option, amount, self.cog)
+                # If multiple economies, show selection
+                view = EconomySelectView(
+                    self.prediction,
+                    self.option,
+                    amount,
+                    self.cog,
+                    external_economies
+                )
                 await interaction.response.edit_message(
                     content=f"Selected amount: {amount} points\nChoose economy:",
                     view=view
