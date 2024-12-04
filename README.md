@@ -1,178 +1,150 @@
-# FoxBot Discord Bot
+# Low Poly Market Discord Bot
 
-A Discord bot featuring a prediction market system that works with multiple external economies.
+A Discord bot featuring a prediction market system that integrates with multiple external token economies.
+
+## Overview
+
+Low Poly Market implements a sophisticated prediction market system allowing users to bet tokens from various external economies on user-created predictions. The system is designed with strict separation of concerns, robust error handling, and follows a service-oriented architecture.
+
+## Core Features
+
+- Prediction Market System with automated resolution
+- Real-time Market Updates
+- Automated Notifications
+- Multiple External Economy Integration
+- Interactive Discord UI
+- Comprehensive Logging System
+
+## System Architecture
+
+### Component Overview
+- **Bot Core**: Central coordinator and service manager
+- **Economy System**: Handles token management across economies
+- **Prediction Market**: Manages betting markets and resolutions
+- **Transfer Service**: Coordinates all token movements
+- **Database Layer**: Persistent storage using SQLAlchemy 2.0
+
+### Service Layer
+- **Transfer Service**: Central hub for all token movements
+- **Local Points Service**: Internal economy management
+- **External Economy Services**: External token system interfaces
+- **Prediction Market Service**: Market logic and resolution handling
+
+### Cog Layer
+- **Local Economy Cog**: Core economy initialization
+- **External Economy Cogs**: External economy interfaces
+- **Prediction Market Cog**: User interface and command handling
+
+## Initialization Sequence
+
+1. Bot Startup
+   - Database connection establishment
+   - Service initialization
+   - Cog loading in specified order
+
+2. Service Initialization Order
+   - Local Economy (initializes transfer service)
+   - External Economies (register with transfer service)
+   - Prediction Market (uses registered economies)
+
+3. Command Registration
+   - Slash command synchronization
+   - View registration
+   - Event handler setup
 
 ## Core Design Principles
 
-### Economy System Architecture
-- **Local Economy**: Core economy that cannot participate in prediction markets
-- **External Economies**: Multiple external economies (e.g., Hackathon, FFS) can be connected
-- **Transfer Service**: Central service that handles all token movements between economies
-- **Initialization Order**: Critical for proper system setup
-  1. Local Economy (initializes transfer service)
-  2. External Economies (register with transfer service)
-  3. Prediction Market (uses registered external economies)
-### Service Design
-- All token movements must go through the Transfer Service
-- Services should not directly interact with each other
-- External economies register themselves with the Transfer Service
-- Prediction Market only works with registered external economies
+### Golden Rules
+1. **Transfer Service Sovereignty**
+   - All token movements MUST go through the Transfer Service
+   - Services never directly modify token balances
+   - Always adapt to Transfer Service interfaces, never modify them
 
-### Implementation Patterns
-- Use SQLAlchemy 2.0 best practices for database operations
-- Maintain timezone-safe datetime handling throughout
-- Use Discord's standard time formatting in all UI elements
-- Display Discord usernames consistently in all modals
-- Follow established patterns in `bot.py` for initialization
-- Use `/database/models.py` as the source of truth for data structures
-### User Commands
+2. **Economy Separation**
+   - Local economy cannot participate in prediction markets
+   - External economies must register with Transfer Service
+   - Prediction Market only accepts external economy tokens
 
-#### Creating Predictions
-```
-/create_prediction question:"Who will win?" options:"Team A,Team B" end_time:"2h"
-```
-- `question`: The prediction question (required)
-- `options`: Comma-separated list of possible outcomes (required)
-- `end_time`: When the prediction ends (e.g., "2h", "1d", "30m") (required)
-- `category`: Optional category for the prediction
+3. **Error Handling**
+   - Graceful degradation on failures
+   - Comprehensive logging at all levels
+   - User-friendly error messages
 
-#### Viewing Predictions
-```
-/predictions [show_all:True/False]
-```
-- Shows active predictions by default
-- Use `show_all:True` to see resolved predictions too
-- Displays:
-  - Prediction questions
-  - Current pool sizes
-  - Time remaining
-  - Available options
+### Best Practices
 
-#### Placing Bets
-```
-/bet
-```
-Interactive command that guides you through:
-1. Selecting a prediction
-2. Choosing your predicted outcome
-3. Selecting point type (local/external economies)
-4. Entering bet amount
+1. **Service Communication**
+   ```python
+   # CORRECT: Use Transfer Service interface
+   await self.transfer_service.deposit_to_local(...)
+   
+   # INCORRECT: Direct service-to-service calls
+   await external_service.remove_points(...)
+   ```
 
-#### Resolving Predictions
-```
-/resolve
-```
-For prediction creators only:
-1. Select your prediction to resolve
-2. Choose the winning option
-3. Confirm to process payouts
+2. **Economy Management**
+   ```python
+   # Get available economies from transfer service
+   external_economies = list(self.bot.transfer_service._external_services.keys())
+   ```
 
-#### Refunding Predictions
-```
-/refund
-```
-For prediction creators only:
-- Refunds all bets for a prediction
-- Useful for cancelled events or errors
+3. **Error Handling**
+   ```python
+   try:
+       await self.process_transaction(...)
+   except TransferError as e:
+       self.logger.error(f"Transfer failed: {e}")
+       await self.notify_user(...)
+   ```
 
-### Point System
+## Detailed Implementation Guidelines
 
-- Users can bet points from different economies
-- Winning bets earn proportional shares of the total pool
-- Payouts are automatically processed on resolution
-- Points are returned for refunded predictions
+### Adding New External Economies
+1. Create economy service implementing standard interface
+2. Create economy cog that registers with Transfer Service
+3. Add to cog_load_order in bot.py
+4. Economy automatically becomes available for prediction markets
 
-### Examples
+### Transaction Flow
+1. User initiates action (bet, resolution)
+2. Service validates request
+3. Transfer Service handles token movement
+4. Database updates transaction record
+5. User notification sent
 
-1. Creating a prediction:
-```
-/create_prediction question:"Will it rain tomorrow?" options:"Yes,No" end_time:"24h"
-```
+### Notification System
+- Automated notifications for:
+  - Market creation
+  - Betting period end
+  - Market resolution
+  - Payout distribution
+  - Error conditions
 
-2. Viewing active predictions:
-```
-/predictions
-```
-
-3. Placing a bet:
-```
-/bet
-[Select prediction from dropdown]
-[Select your prediction]
-[Choose point type]
-[Enter amount]
-```
-
-4. Resolving a prediction:
-```
-/resolve
-[Select prediction]
-[Choose winning option]
-[Confirm]
-```
-
-## Project Structure
-```
-FoxBot/
-├── bot.py                    # Main entry point and initialization
-├── cogs/
-│   ├── local_economy.py      # Core economy & transfer service init
-│   ├── hackathon_economy.py  # External economy implementation
-│   └── prediction_market.py  # Prediction market commands & UI
-├── services/
-│   ├── transfer_service.py   # Central token movement handling
-│   ├── local_points.py       # Local economy service
-│   └── prediction_market.py  # Prediction market logic
-└── database/
-    ├── models.py             # SQLAlchemy models
-    └── database.py           # Database connection handling
-```
+### Logging Strategy
+- DEBUG: Detailed flow information
+- INFO: Major state changes
+- WARNING: Recoverable issues
+- ERROR: Critical failures
+- Include relevant context in log messages
 
 ## Development Guidelines
 
-### Adding New External Economies
-1. Create new economy service implementing standard interface
-2. Create new economy cog that registers with Transfer Service
-3. Add to cog_load_order in bot.py (after local_economy, before prediction_market)
-4. Economy automatically becomes available for prediction markets
+### Code Style
+- Use type hints
+- Document public methods
+- Include error handling
+- Log meaningful events
+- Follow PEP 8
 
-### Shutdown Sequence
-- Services and cogs are shut down in reverse order of initialization
-- Ensures proper cleanup of resources and database connections
-- Follows pattern established in bot.py close() method
+### Testing Requirements
+- Unit tests for services
+- Integration tests for cogs
+- Mock external services
+- Test error conditions
+- Verify logging output
 
-1. Clone the repository
-2. Install dependencies:
-```
-pip install -r requirements.txt
-```
-3. Set up environment variables:
-```
-DISCORD_TOKEN=your_bot_token
-DATABASE_URL=your_database_url
-```
-4. Run the bot:
-```
-python main.py
-```
-
-## Permissions Required
-
-The bot needs these Discord permissions:
-- Send Messages
-- Embed Links
-- Add Reactions
-- Use External Emojis
-- Use Slash Commands
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-
-[Your License Here]
+### Deployment Considerations
+- Environment configuration
+- Database migrations
+- Discord permissions
+- External service credentials
+- Logging setup
