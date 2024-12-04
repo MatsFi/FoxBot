@@ -14,13 +14,12 @@ from services.prediction_market_service import (
     InvalidBetError,
     InsufficientLiquidityError,
 )
-from utils.logging import PredictionMarketFilter
 
-class MarketListView(ui.View):
-    """View for displaying and auto-updating market listings."""
+class MarketListView(discord.ui.View):
+    """View for displaying and navigating prediction markets."""
     
     def __init__(
-        self, 
+        self,
         service: PredictionMarketService,
         bot: discord.Client,
         timeout: float = 180.0
@@ -29,131 +28,60 @@ class MarketListView(ui.View):
         self.service = service
         self.bot = bot
         self.logger = bot.logger.getChild('market_list_view')
-        self.logger.addFilter(PredictionMarketFilter())  # Add market-specific context
-        self.stored_interaction: Optional[discord.Interaction] = None
-        self.update_task: Optional[asyncio.Task] = None
+        self.current_page = 0
+        self.markets_per_page = 5
 
-    async def start_auto_update(self) -> None:
-        """Start the auto-update task."""
-        if not self.update_task:
-            self.update_task = asyncio.create_task(self.auto_update_markets())
-            self.logger.debug("Started auto-update task")
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.gray)
+    async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle previous page button click."""
+        if self.current_page > 0:
+            self.current_page -= 1
+            await self.update_market_list(interaction)
 
-    def stop_auto_update(self) -> None:
-        """Stop the auto-update task."""
-        if self.update_task:
-            self.update_task.cancel()
-            self.update_task = None
-            self.logger.debug("Stopped auto-update task")
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.gray)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle next page button click."""
+        # Service will tell us if there are more pages
+        self.current_page += 1
+        await self.update_market_list(interaction)
 
-    async def auto_update_markets(self) -> None:
-        """Auto-update markets every 30 seconds."""
+    async def update_market_list(self, interaction: discord.Interaction):
+        """Update the market list embed."""
         try:
-            while True:
-                await self.refresh_view()
-                await asyncio.sleep(30)
-        except asyncio.CancelledError:
-            self.logger.debug("Auto-update task cancelled")
-        except Exception as e:
-            self.logger.error(f"Error in auto_update_markets: {e}", exc_info=True)
-
-    def create_market_display(self, prediction: Prediction, prices: Dict) -> str:
-        """Create a formatted market display."""
-        market_text = (
-            f"Category: {prediction.category or 'None'}\n"
-            f"Total Volume: {sum(bet.amount for bet in prediction.bets):,} Points\n"
-            f"Ends: <t:{int(prediction.end_time.timestamp())}:R>\n\n"
-            "Current Market Status:\n"
-        )
-
-        for option in prediction.options:
-            price_info = prices.get(option.text, {})
-            vote_count = len(prediction.votes_per_option.get(option.text, []))
-            market_text += (
-                f"```\n"
-                f"{option.text}\n"
-                f"Price: {price_info.get('price_per_share', 0):.2f} Points/Share\n"
-                f"Prob:  {price_info.get('probability', 0):.1f}%\n"
-                f"Volume: {price_info.get('total_bets', 0):,} Points\n"
-                f"Votes: {vote_count}\n"
-                f"```\n"
+            markets = await self.service.get_active_markets(
+                skip=self.current_page * self.markets_per_page,
+                limit=self.markets_per_page
             )
-
-        return market_text
-
-    async def refresh_view(self) -> None:
-        """Refresh the market display."""
-        if not self.stored_interaction:
-            return
-
-        try:
-            current_embed = discord.Embed(
-                title="Prediction Markets",
-                description="Current prediction markets available for betting.",
+            
+            embed = discord.Embed(
+                title="Active Prediction Markets",
                 color=discord.Color.blue()
             )
 
-            # Fetch and categorize markets
-            active_markets = await self.service.get_active_predictions()
-            pending_markets = await self.service.get_pending_resolution()
-
-            # Add active markets
-            if active_markets:
-                current_embed.add_field(
-                    name="Active Markets", 
-                    value="\u200b", 
-                    inline=False
-                )
-                for prediction in active_markets:
-                    prices = await self.service.get_market_status(prediction)
-                    creator = await self.bot.fetch_user(prediction.creator_id)
-                    current_embed.add_field(
-                        name=f"{prediction.question} (Created by: {creator.name})",
-                        value=self.create_market_display(prediction, prices),
-                        inline=False
-                    )
-
-            # Add pending resolution markets
-            if pending_markets:
-                current_embed.add_field(
-                    name="Pending Resolution", 
-                    value="\u200b", 
-                    inline=False
-                )
-                for prediction in pending_markets:
-                    prices = await self.service.get_market_status(prediction)
-                    creator = await self.bot.fetch_user(prediction.creator_id)
-                    current_embed.add_field(
-                        name=f"{prediction.question} (Created by: {creator.name})",
-                        value=self.create_market_display(prediction, prices),
-                        inline=False
-                    )
-
-            current_embed.set_footer(text="Use /bet to place bets on active markets")
-            
-            await self.stored_interaction.edit_original_response(embed=current_embed)
-
-        except discord.NotFound:
-            self.logger.debug("Original message was deleted")
-            self.stop_auto_update()
-        except discord.HTTPException as e:
-            if e.code == 50027:  # Invalid Webhook Token
-                self.logger.debug("Interaction token expired")
-                self.stop_auto_update()
+            if not markets:
+                embed.description = "No active prediction markets found!"
+                self.current_page = max(0, self.current_page - 1)
             else:
-                self.logger.error(f"HTTP Exception in refresh_view: {e}")
+                for market in markets:
+                    embed.add_field(
+                        name=f"#{market.id}: {market.question}",
+                        value=(
+                            f"Options: {', '.join(opt.text for opt in market.options)}\n"
+                            f"Ends: <t:{int(market.end_time.timestamp())}:R>\n"
+                            f"Created by: <@{market.creator_id}>"
+                        ),
+                        inline=False
+                    )
+
+            embed.set_footer(text=f"Page {self.current_page + 1}")
+            await interaction.response.edit_message(embed=embed, view=self)
+
         except Exception as e:
-            self.logger.error(f"Error refreshing view: {e}", exc_info=True)
-            self.stop_auto_update()
-
-    async def on_timeout(self) -> None:
-        """Handle view timeout."""
-        self.stop_auto_update()
-        self.logger.debug("Market list view timed out")
-
-    def __del__(self) -> None:
-        """Cleanup when the view is destroyed."""
-        self.stop_auto_update()
+            self.logger.error(f"Error updating market list: {e}", exc_info=True)
+            await interaction.response.send_message(
+                "Error updating market list. Please try again.",
+                ephemeral=True
+            )
 
 class BettingView(ui.View):
     """View for placing bets on predictions."""

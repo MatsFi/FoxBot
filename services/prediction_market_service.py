@@ -392,3 +392,43 @@ class PredictionMarketService:
         except Exception as e:
             self.logger.error(f"Error initializing PredictionMarketService: {e}")
             raise
+
+    async def get_active_markets(
+        self,
+        skip: int = 0,
+        limit: int = 5
+    ) -> List[Prediction]:
+        """Get active prediction markets.
+        
+        Args:
+            skip: Number of markets to skip (for pagination)
+            limit: Maximum number of markets to return
+            
+        Returns:
+            List of active prediction markets
+        """
+        try:
+            query = (
+                select(Prediction)
+                .where(Prediction.resolved_at.is_(None))  # Not resolved
+                .where(Prediction.end_time > utc_now())   # Not ended
+                .order_by(Prediction.created_at.desc())   # Newest first
+                .offset(skip)
+                .limit(limit)
+            )
+            
+            result = await self._session.execute(query)
+            markets = result.scalars().all()
+            
+            self.logger.debug(f"Retrieved {len(markets)} active markets")
+            return markets
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching active markets: {e}", exc_info=True)
+            raise
+
+    async def stop(self):
+        """Cleanup and stop the prediction market service."""
+        self.logger.info("Stopping prediction market service...")
+        # Add any cleanup needed here
+        self.logger.info("Prediction market service stopped")

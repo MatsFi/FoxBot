@@ -3,7 +3,6 @@ import asyncio
 import logging
 import platform
 import os
-from pathlib import Path
 from typing import Optional
 from aiohttp import web
 import discord
@@ -12,29 +11,85 @@ from config.settings import load_config
 from database.database import Database
 from sqlalchemy import text
 from services.prediction_market_service import PredictionMarketService
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+
 from services.local_points_service import LocalPointsService
 from utils.logging import setup_logger
 
 class DiscordBot(commands.Bot):
     """Main bot class with core functionality."""
 
-    def __init__(self):
-        """Initialize the bot with basic configuration."""
-        # Load configuration first
-        self.config = load_config()
-        
+    def __init__(self, *args, **kwargs):
         # Set up intents
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-
+        
+        # Initialize bot with command prefix and intents
         super().__init__(
-            command_prefix=commands.when_mentioned_or(self.config.command_prefix),
+            command_prefix='!',
             intents=intents,
-            help_command=commands.DefaultHelpCommand()
+            *args,
+            **kwargs
         )
+        
+        # Silence all default loggers
+        logging.getLogger().handlers = []  # Remove all handlers
+        for name in ['discord', 'discord.http', 'discord.gateway', 
+                    'discord.client', 'aiosqlite', 'asyncio', 'aiohttp.access']:
+            logging.getLogger(name).setLevel(logging.WARNING)
+        
+        # Configure our custom logger
+        self.logger = logging.getLogger()  # Use root logger
+        self.logger.setLevel(logging.INFO)
+        
+        # Create console handler with color formatting
+        console_handler = logging.StreamHandler()
+        
+        # Custom formatter with standard colors
+        class CustomFormatter(logging.Formatter):
+            COLORS = {
+                'DEBUG': '\033[36m',    # Cyan
+                'INFO': '\033[32m',     # Green
+                'WARNING': '\033[33m',   # Yellow
+                'ERROR': '\033[31m',     # Red
+                'CRITICAL': '\033[41m',  # Red background
+            }
+            
+            def format(self, record):
+                # Skip heartbeat messages
+                if "Heartbeat updated" in str(record.msg):
+                    return ""
+                    
+                # Save original
+                original_name = record.name
+                record.name = ''
+                
+                # Add colors
+                levelname = record.levelname
+                if levelname in self.COLORS:
+                    record.levelname = f"{self.COLORS[levelname]}{levelname}\033[0m"
+                
+                # Format
+                result = super().format(record)
+                
+                # Restore original
+                record.name = original_name
+                record.levelname = levelname
+                
+                return result
+        
+        formatter = CustomFormatter(
+            fmt='\033[36m%(asctime)s\033[0m - %(levelname)-20s - \033[37m%(message)s\033[0m',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
+        
+        # Disable heartbeat logging
+        self._skip_heartbeat_log = True
+        
+        # Load configuration first
+        self.config = load_config()
         
         # Initialize database and db_session as None - will be set up in setup_hook
         self.database: Optional[Database] = None
@@ -60,9 +115,19 @@ class DiscordBot(commands.Bot):
             'cogs.prediction_market'   # 3. Can now use transfer service and economies
                 ]
 
+        # Configure logging
+        logging.basicConfig(level=logging.DEBUG)  # Set root logger to DEBUG
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)  # Ensure bot logger is DEBUG
+
+        self.loaded_cogs = []  # Track loading order
+
     async def setup_hook(self):
         """Initialize bot systems."""
         try:
+            # Set logging to DEBUG level
+            self.logger.setLevel(logging.DEBUG)
+            
             self.logger.info("Initializing bot systems...")
             self.logger.info(f"Python version: {platform.python_version()}")
             self.logger.info(f"Discord.py version: {discord.__version__}")
@@ -115,8 +180,10 @@ class DiscordBot(commands.Bot):
 
             # Sync commands with Discord
             self.logger.info("Syncing application commands...")
-            await self.tree.sync()
-            self.logger.info("Application commands synced")
+            synced_commands = await self.tree.sync()
+            for command in synced_commands:
+                self.logger.info(f"Synced command: {command.name}")
+            self.logger.info(f"Synced {len(synced_commands)} application commands")
 
         except Exception as e:
             self.logger.error(f"Error during setup: {e}")
@@ -209,58 +276,58 @@ class DiscordBot(commands.Bot):
         )
 
     async def close(self):
-        """Close the bot and cleanup resources."""
+        """Cleanup and close the bot."""
         try:
             self.logger.info("Starting bot shutdown sequence...")
-
-            # Stop tasks first
-            if self.heartbeat.is_running():
-                self.heartbeat.cancel()
             
-            # Stop web server if it exists
-            if hasattr(self, '_web_runner'):
-                self.logger.info("Stopping health check server...")
-                await self._web_runner.cleanup()
-                self.logger.info("Health check server stopped")
-
-            # 1. Unload cogs first (they might need database access during cleanup)
+            # Stop health check server
+            self.logger.info("Stopping health check server...")
+            if hasattr(self, 'health_check_server'):
+                await self.health_check_server.stop()
+            self.logger.info("Health check server stopped")
+            
+            # Unload cogs in reverse order
             self.logger.info("Unloading cogs...")
-            for cog in reversed(self.cog_load_order):
-                try:
-                    await self.unload_extension(cog)
-                    self.logger.info(f"Unloaded cog: {cog}")
-                except Exception as e:
-                    self.logger.error(f"Failed to unload cog {cog}: {e}")
+            for cog in reversed(self.loaded_cogs):
+                await self.unload_extension(cog)
+                self.logger.info(f"Unloaded cog: {cog}")
             self.logger.info("All cogs unloaded")
-
-            # 2. Stop services that depend on the database
-            if hasattr(self, 'prediction_market_service'):
-                self.logger.info("Stopping prediction market service...")
-                await self.prediction_market_service.stop()
-                self.logger.info("Prediction market service stopped")
-
-            # 3. Clean up database sessions
-            if hasattr(self, 'db_session'):
-                self.logger.info("Cleaning up database sessions...")
-                self.db_session = None
-                self.logger.info("Database sessions cleaned up")
-
-            # 4. Close database connection
-            if hasattr(self, 'database'):
-                self.logger.info("Closing database connection...")
-                await self.database.close()
-                self.logger.info("Database connection closed")
-
-            # 5. Finally, close Discord connection
-            self.logger.info("Closing Discord connection...")
-            await super().close()
-            self.logger.info("Discord connection closed")
             
-            self.logger.info("Shutdown complete")
+            # Stop prediction market service
+            if hasattr(self, 'prediction_market_service'):
+                try:
+                    await self.prediction_market_service.stop()
+                except Exception as e:
+                    self.logger.error(f"Error stopping prediction market service: {e}")
+            
+            # Call parent's close
+            await super().close()
             
         except Exception as e:
             self.logger.error(f"Error during shutdown: {e}")
             raise
+
+    # Completely override the heartbeat loop to prevent logging
+    async def _heartbeat_loop(self):
+        # Silent heartbeat loop
+        while not self.is_closed():
+            if self.ws is not None and self.ws.is_alive():
+                await self.ws.send_heartbeat(self.ws.get_payload())
+            await asyncio.sleep(self.ws.heartbeat_interval if self.ws else 41.25)
+
+    async def load_cogs(self):
+        """Load cogs in specific order and track them."""
+        self.logger.info("Loading cogs in order...")
+        cog_order = [
+            'cogs.local_economy',
+            'cogs.hackathon_economy',
+            'cogs.prediction_market'
+        ]
+        
+        for cog in cog_order:
+            await self.load_extension(cog)
+            self.loaded_cogs.append(cog)
+            self.logger.info(f"Loaded {cog}")
 
 def main():
     """Main entry point for the bot."""

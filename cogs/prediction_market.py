@@ -53,15 +53,11 @@ class PredictionMarket(commands.Cog):
         category: Optional[str] = None
     ):
         """Create a new prediction market."""
-        self.logger.debug("Starting create_prediction command")
-        await interaction.response.defer(ephemeral=True)
-        
         try:
             # Parse duration
-            self.logger.debug("Parsing duration")
             duration_parts = duration.split(',')
             if len(duration_parts) != 3:
-                await interaction.followup.send(
+                await interaction.response.send_message(
                     "Duration must be in format: days,hours,minutes (e.g., 1,2,30 or ,,30 or 1,,)",
                     ephemeral=True
                 )
@@ -73,23 +69,24 @@ class PredictionMarket(commands.Cog):
             
             total_minutes = (days * 24 * 60) + (hours * 60) + minutes
             if total_minutes <= 0:
-                await interaction.followup.send(
+                await interaction.response.send_message(
                     "Duration must be greater than 0! Please specify days, hours, or minutes.",
                     ephemeral=True
                 )
                 return
 
             # Parse options
-            self.logger.debug("Parsing options")
             options_list = [opt.strip() for opt in options.split(',')]
             if len(options_list) < 2:
-                await interaction.followup.send(
+                await interaction.response.send_message(
                     "You must provide at least 2 options.",
                     ephemeral=True
                 )
                 return
 
             end_time = utc_now() + timedelta(minutes=total_minutes)
+            
+            await interaction.response.defer(ephemeral=True)
             
             success, message, prediction = await self.service.create_prediction(
                 question=question,
@@ -139,7 +136,46 @@ class PredictionMarket(commands.Cog):
                 ephemeral=True
             )
 
-    # ... [rest of the file remains unchanged]
+    @app_commands.command(
+        name="predictions",
+        description="List active prediction markets"
+    )
+    async def list_predictions(self, interaction: discord.Interaction):
+        """List active prediction markets."""
+        try:
+            view = MarketListView(self.service, self.bot)
+            # Initial market fetch
+            markets = await self.service.get_active_markets(skip=0, limit=5)
+            
+            embed = discord.Embed(
+                title="Active Prediction Markets",
+                color=discord.Color.blue()
+            )
+
+            if not markets:
+                embed.description = "No active prediction markets found!"
+            else:
+                for market in markets:
+                    embed.add_field(
+                        name=f"#{market.id}: {market.question}",
+                        value=(
+                            f"Options: {', '.join(opt.text for opt in market.options)}\n"
+                            f"Ends: <t:{int(market.end_time.timestamp())}:R>\n"
+                            f"Created by: <@{market.creator_id}>"
+                        ),
+                        inline=False
+                    )
+
+            embed.set_footer(text="Page 1")
+            await interaction.response.send_message(embed=embed, view=view)
+            self.active_views.add(view)
+
+        except Exception as e:
+            self.logger.error(f"Error listing predictions: {e}", exc_info=True)
+            await interaction.response.send_message(
+                "Error fetching prediction markets. Please try again.",
+                ephemeral=True
+            )
 
 async def setup(bot):
     """Set up the prediction market cog."""
